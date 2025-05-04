@@ -13,30 +13,39 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { getArticle } from '@/services/firebase-storage';
 import type { StoredArticleData } from '@/services/firebase-storage';
 import { Skeleton } from '@/components/ui/skeleton';
+import { decodeBase64UrlSafe } from '@/lib/utils'; // Import the helper function
 
 export default function ArticlePage() {
   const params = useParams();
-  // The slug is the base64url encoded article URL.
+  // The slug is the URL-safe Base64 encoded article URL.
   const slug = Array.isArray(params.slug) ? params.slug[0] : params.slug; // Assuming single segment slug
 
-   // Decode the slug to get the article ID used in storage
-   const articleId = slug ? Buffer.from(slug, 'base64url').toString('utf8') : undefined;
-   // We still need the original URL for display/linking, which is what the articleId represents here
-   const originalUrl = articleId;
+   // Decode the slug to get the article ID used in storage (which is the encoded URL)
+   const articleId = slug;
+   // We still need the original URL for display/linking. Decode it using the helper.
+   let originalUrl: string | undefined;
+   if (slug) {
+     try {
+       originalUrl = decodeBase64UrlSafe(slug);
+     } catch (error) {
+       console.error("Error decoding slug:", slug, error);
+       // Handle potential decoding errors, maybe redirect or show an error state
+     }
+   }
 
 
   const { data: article, isLoading, error, isError } = useQuery<StoredArticleData, Error>({
-    // Use the **encoded slug** as the query key parameter, as that's what getArticle expects
-    queryKey: ['article', slug],
+    // Use the **encoded slug** (articleId) as the query key parameter, as that's what getArticle expects
+    queryKey: ['article', articleId],
     queryFn: () => {
-        if (!slug) {
+        if (!articleId) {
             // Should not happen if route matching works, but defensively handle
             return Promise.reject(new Error('Article ID (slug) is missing'));
         }
         // Pass the encoded slug (which is the storage ID) to getArticle
-        return getArticle(slug);
+        return getArticle(articleId);
     },
-    enabled: !!slug, // Only run query if slug is available
+    enabled: !!articleId, // Only run query if slug is available
     staleTime: 60 * 60 * 1000, // Cache article data for 1 hour
     refetchOnWindowFocus: false, // Don't refetch on focus, content is static once stored
   });
@@ -57,6 +66,8 @@ export default function ArticlePage() {
               {isError
                   ? error?.message || 'Could not fetch article details. It might have been moved or deleted.'
                   : 'The requested article could not be found in our system.'}
+              {/* Add a specific hint for decoding errors */}
+               {!originalUrl && slug && <span className="block mt-2">Could not decode the article identifier from the URL.</span>}
           </p>
            <Button variant="outline" asChild>
              <Link href="/">
@@ -140,12 +151,14 @@ export default function ArticlePage() {
              <Card className="shadow-md border-border">
                <CardHeader className="flex flex-row items-center justify-between space-x-4">
                  <CardTitle className="text-lg">Original Article Summary</CardTitle>
-                 <Button variant="outline" size="sm" asChild>
-                     {/* Link to the original article URL */}
-                     <a href={decodedOriginalUrl} target="_blank" rel="noopener noreferrer" title="Opens original article in new tab">
-                        View Original <ExternalLink className="ml-2 h-4 w-4"/>
-                     </a>
-                 </Button>
+                  {/* Link to the original article URL, only if successfully decoded */}
+                  {decodedOriginalUrl !== '#' && (
+                      <Button variant="outline" size="sm" asChild>
+                          <a href={decodedOriginalUrl} target="_blank" rel="noopener noreferrer" title="Opens original article in new tab">
+                              View Original <ExternalLink className="ml-2 h-4 w-4"/>
+                          </a>
+                      </Button>
+                  )}
                </CardHeader>
                <CardContent>
                  <ScrollArea className="h-[300px] md:h-[400px] pr-3">
@@ -233,4 +246,3 @@ function ArticleSkeleton() {
     </>
   );
 }
-```

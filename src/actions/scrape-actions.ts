@@ -8,11 +8,9 @@ import { storeArticle } from '@/services/firebase-storage';
 import type { StoredArticleData } from '@/services/firebase-storage';
 import pLimit from 'p-limit';
 import { URL } from 'url';
-// import winston from 'winston'; // Assuming a logging library is used
 import puppeteer from 'puppeteer';
+import { encodeBase64UrlSafe } from '@/lib/utils'; // Import the helper function
 
-// Removed winston logger setup - Use console.* instead
-// const logger = winston.createLogger({ ... });
 
 // --- Interfaces ---
 interface NewsArticle {
@@ -322,7 +320,7 @@ const scrapingConfig: Record<string, ScrapingConfig> = {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       }
   },
-   'Al Jazeera': {
+  'Al Jazeera': {
         url: 'https://www.aljazeera.com/',
         sourceName: 'Al Jazeera',
         selector: {
@@ -691,8 +689,8 @@ export async function scrapeAndStoreArticles(
                 console.debug(`Summarized article: ${article.url} in ${Date.now() - articleProcessStart}ms`);
 
                 // 2. Prepare data for storage
-                // Encode URL to create a safe filename/ID
-                 const articleId = Buffer.from(article.url).toString('base64url');
+                // Encode URL to create a safe filename/ID using the utility function
+                 const articleId = encodeBase64UrlSafe(article.url);
 
                 const dataToStore: StoredArticleData = {
                   ...article,

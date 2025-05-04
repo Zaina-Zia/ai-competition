@@ -2,7 +2,7 @@
 import { storage } from './firebase-config';
 import { ref, uploadString, getDownloadURL, deleteObject, listAll, StorageReference } from 'firebase/storage';
 import type { NewsArticle } from './news-scraper.interface'; // Use updated interface
-// Removed winston import
+import { encodeBase64UrlSafe, decodeBase64UrlSafe } from '@/lib/utils'; // Import helpers
 
 /*
  * =============================================================================
@@ -27,7 +27,7 @@ import type { NewsArticle } from './news-scraper.interface'; // Use updated inte
  *    Follow the instructions: https://cloud.google.com/storage/docs/gsutil_install
  *
  * 2. Create a CORS configuration file (e.g., `cors-config.json`):
- *    Replace `http://localhost:9000` / `https://*.cloudworkstations.dev` with your actual origins.
+ *    Replace `http://localhost:9000` / `https://*.cloudworkstations.dev` / etc. with your actual origins.
  *    You can add multiple origins to the array.
  *    Using wildcards like `*.cloudworkstations.dev` is possible but be mindful of security implications.
  *
@@ -35,8 +35,8 @@ import type { NewsArticle } from './news-scraper.interface'; // Use updated inte
  *    [
  *      {
  *        "origin": [
- *           "http://localhost:9000",
- *           "https://9000-idx-studio-1746337412493.cluster-w5vd22whf5gmav2vgkomwtc4go.cloudworkstations.dev", // Replace with your specific dev URL
+ *           "http://localhost:9000", // Local dev
+ *           "https://9000-idx-studio-1746337412493.cluster-w5vd22whf5gmav2vgkomwtc4go.cloudworkstations.dev", // Specific dev URL
  *           "https://*.cloudworkstations.dev", // Wider match for dev environments
  *           "https://your-production-app-domain.com" // Add production domain here
  *         ],
@@ -94,9 +94,9 @@ const ARTICLES_FOLDER = 'articles';
 
 /**
  * Stores the article data (including the generated script) as a JSON file in Firebase Storage.
- * Uses base64url encoding of the URL for a safe and unique filename.
+ * Uses URL-safe base64 encoding of the URL for a unique filename.
  *
- * @param articleId The **base64url encoded** unique identifier derived from the article URL.
+ * @param articleId The **URL-safe base64 encoded** unique identifier derived from the article URL.
  * @param data The article data including the generated script.
  * @returns A promise that resolves when the upload is complete.
  */
@@ -119,7 +119,7 @@ export async function storeArticle(articleId: string, data: StoredArticleData): 
 /**
  * Retrieves the article data (including the generated script) from Firebase Storage.
  *
- * @param articleId The **base64url encoded** unique identifier for the article.
+ * @param articleId The **URL-safe base64 encoded** unique identifier for the article.
  * @returns A promise that resolves to the StoredArticleData.
  */
 export async function getArticle(articleId: string): Promise<StoredArticleData> {
@@ -161,8 +161,8 @@ export async function getArticle(articleId: string): Promise<StoredArticleData> 
         const data: StoredArticleData = await response.json();
         console.info(`Article ${articleId} retrieved successfully.`);
         // Basic validation of expected fields
-        if (!data.title || !data.url || !data.source || !data.content) {
-             console.warn(`Retrieved data for article ID ${articleId} is missing required fields.`);
+        if (!data.title || !data.url || !data.source) { // Removed check for content as it might be intentionally short
+             console.warn(`Retrieved data for article ID ${articleId} is missing required fields (title, url, source).`);
              // Depending on strictness, you might throw an error here
         }
 
@@ -173,7 +173,7 @@ export async function getArticle(articleId: string): Promise<StoredArticleData> 
 
         // Provide a more user-friendly error message, hinting at CORS
         let errorMessage = `Failed to fetch article data for ${articleId}. This might be a network issue or a CORS configuration problem on the storage bucket. Check browser console and CORS settings.`;
-         if (error instanceof TypeError && error.message === 'Failed to fetch') {
+         if (error instanceof TypeError && error.message.includes('Failed to fetch')) { // Check includes for more robustness
             errorMessage += ' The error suggests a possible CORS issue. Verify that the origin of your application is in the allowed origins in the Firebase Storage CORS configuration.';
          } else if (error instanceof SyntaxError) {
              // JSON parsing error
@@ -242,7 +242,7 @@ export async function getAllStoredArticles(): Promise<StoredArticleData[]> {
 /**
  * Deletes an article's data from Firebase Storage.
  *
- * @param articleId The **base64url encoded** unique identifier for the article.
+ * @param articleId The **URL-safe base64 encoded** unique identifier for the article.
  * @returns A promise that resolves when the deletion is complete.
  */
 export async function deleteArticle(articleId: string): Promise<void> {

@@ -34,10 +34,10 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
 import { scrapeAndStoreArticles } from '@/actions/scrape-actions'; // Import Server Action
-import type { NewsArticle } from '@/services/news-scraper.interface'; // Interface for scraped data
 import { getAllStoredArticles } from '@/services/firebase-storage'; // Import fetch function
 import type { StoredArticleData } from '@/services/firebase-storage'; // Interface for stored data (includes script)
 import { Skeleton } from '@/components/ui/skeleton'; // Import Skeleton
+import { encodeBase64UrlSafe } from '@/lib/utils'; // Import the helper function
 
 
 // Define available news sources
@@ -76,7 +76,8 @@ export function NewsFeed() {
                      return new Date(b.publishedDate).getTime() - new Date(a.publishedDate).getTime();
                  } catch { /* ignore parsing errors */ }
              }
-             return b.title.localeCompare(a.title); // Fallback sort
+             // Fallback sort by title if dates are unavailable or invalid
+             return (b.title || '').localeCompare(a.title || '');
          });
          return articles;
        } catch (err) {
@@ -166,7 +167,7 @@ export function NewsFeed() {
     return allArticles.filter((article) => {
         const sourceMatch = selectedSources.length === 0 || selectedSources.includes(article.source);
         const termMatch = searchTerm === '' ||
-                          article.title.toLowerCase().includes(searchTerm) ||
+                          (article.title || '').toLowerCase().includes(searchTerm) || // Add null check
                           (article.content && article.content.toLowerCase().includes(searchTerm)) ||
                           (article.generatedScript && article.generatedScript.toLowerCase().includes(searchTerm));
         return sourceMatch && termMatch;
@@ -293,8 +294,10 @@ export function NewsFeed() {
           {!isArticlesError && filteredArticles.length > 0 && (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6">
               {filteredArticles.map((article) => {
-                 // Use base64url encoding for the ID to be URL-safe
-                 const articleId = Buffer.from(article.url).toString('base64url');
+                 // Use URL-safe Base64 encoding for the ID
+                 const articleId = encodeBase64UrlSafe(article.url);
+                 // Use URL-safe Base64 encoding of the title for image seed
+                 const imageSeed = encodeBase64UrlSafe(article.title || 'fallback-title');
                  return (
                     <Card key={articleId} className="overflow-hidden shadow-md hover:shadow-lg transition-shadow duration-300 ease-in-out bg-card text-card-foreground border-border group flex flex-col">
                       <Link href={`/article/${articleId}`} passHref legacyBehavior>
@@ -302,14 +305,14 @@ export function NewsFeed() {
                            {/* Image */}
                            <div className="relative h-40 w-full overflow-hidden">
                              <Image
-                               src={article.imageUrl || `https://picsum.photos/seed/${Buffer.from(article.title).toString('base64url')}/400/300`} // Use encoded title for seed
-                               alt={article.title}
+                               src={article.imageUrl || `https://picsum.photos/seed/${imageSeed}/400/300`} // Use encoded title for seed
+                               alt={article.title || 'Article image'} // Add fallback alt text
                                layout="fill"
                                objectFit="cover"
                                data-ai-hint="news article technology business world politics" // Hints for potential future image replacement
                                onError={(e) => {
                                   // Fallback if image fails to load
-                                  e.currentTarget.src = `https://picsum.photos/seed/${Buffer.from(article.title).toString('base64url')}/400/300`
+                                  e.currentTarget.src = `https://picsum.photos/seed/${imageSeed}/400/300`
                                }}
                                className="transition-transform duration-300 group-hover:scale-105"
                              />
@@ -317,7 +320,7 @@ export function NewsFeed() {
                            {/* Content */}
                            <div className="p-4 flex flex-col flex-grow">
                               <CardTitle className="text-base font-semibold leading-snug line-clamp-2 mb-1 group-hover:text-accent transition-colors">
-                                  {article.title}
+                                  {article.title || 'Untitled Article'} {/* Add fallback title */}
                                </CardTitle>
                               <p className="text-xs text-muted-foreground mb-2">{article.source} {article.publishedDate && `- ${article.publishedDate}`}</p>
                               {/* Show beginning of generated script if available, else content */}
