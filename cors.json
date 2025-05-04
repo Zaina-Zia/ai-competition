@@ -1,11 +1,8 @@
 [
     {
-      "origin": [
-        "https://6000-idx-studio-1746337412493.cluster-w5vd22whf5gmav2vgkomwtc4go.cloudworkstations.dev",
-        "https://9000-idx-studio-1746337412493.cluster-w5vd22whf5gmav2vgkomwtc4go.cloudworkstations.dev"
-       ],
-      "method": ["GET", "OPTIONS"],
+      "origin": ["*"],
+      "method": ["*"],
       "maxAgeSeconds": 3600,
-      "responseHeader": ["Content-Type", "Access-Control-Allow-Origin"]
+      "responseHeader": ["*"]
     }
 ]
