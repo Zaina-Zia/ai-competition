@@ -1,4 +1,3 @@
-
 /**
  * Represents a news article scraped from a source.
  */
@@ -16,9 +15,13 @@ export interface NewsArticle {
    */
   source: string;
   /**
-   * The main content/body of the article (can be summary or full text).
+   * The main content/body of the article (intended to be the full text after fetching).
    */
   content: string;
+  /**
+    * The initial summary or teaser content scraped from the index page. Optional.
+    */
+  summary?: string;
   /**
    * The URL of the article's primary image, if available.
    */
@@ -30,4 +33,3 @@ export interface NewsArticle {
    publishedDate?: string;
    // Note: generatedScript is added in StoredArticleData in firebase-storage.ts
 }
-```

@@ -1,4 +1,3 @@
-
 'use client';
 
 import React from 'react';
@@ -8,12 +7,15 @@ import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, Loader2, AlertTriangle, ExternalLink } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'; // Added CardDescription
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { getArticle } from '@/services/firebase-storage';
 import type { StoredArticleData } from '@/services/firebase-storage';
 import { Skeleton } from '@/components/ui/skeleton';
 import { decodeBase64UrlSafe } from '@/lib/utils'; // Import the helper function
+
+// Constants
+const CONTENT_DISPLAY_THRESHOLD = 2000; // Characters threshold to show summary first
 
 export default function ArticlePage() {
   const params = useParams();
@@ -81,6 +83,11 @@ export default function ArticlePage() {
 
     // Use the decoded originalUrl for the "View Original" link
     const decodedOriginalUrl = originalUrl || '#'; // Fallback if decoding failed
+
+    // Determine which content to display initially in the "Original Article" section
+    const displaySummaryFirst = article.summary && article.content.length > CONTENT_DISPLAY_THRESHOLD;
+    const initialContentDisplay = displaySummaryFirst ? article.summary : article.content;
+    const fullContentAvailable = article.content && article.content.length > (article.summary?.length || 0);
 
 
     return (
@@ -150,7 +157,15 @@ export default function ArticlePage() {
              {/* Original Article Content */}
              <Card className="shadow-md border-border">
                <CardHeader className="flex flex-row items-center justify-between space-x-4">
-                 <CardTitle className="text-lg">Original Article Summary</CardTitle>
+                 <div>
+                     <CardTitle className="text-lg">Original Article</CardTitle>
+                     {displaySummaryFirst && fullContentAvailable && (
+                        <CardDescription className="text-xs text-muted-foreground mt-1">Showing summary. Full content available below.</CardDescription>
+                     )}
+                     {!article.content && !article.summary && (
+                        <CardDescription className="text-xs text-muted-foreground mt-1">Content not available.</CardDescription>
+                     )}
+                 </div>
                   {/* Link to the original article URL, only if successfully decoded */}
                   {decodedOriginalUrl !== '#' && (
                       <Button variant="outline" size="sm" asChild>
@@ -162,8 +177,20 @@ export default function ArticlePage() {
                </CardHeader>
                <CardContent>
                  <ScrollArea className="h-[300px] md:h-[400px] pr-3">
-                   {/* Display the stored content (which might be summary or full) */}
-                   <p className="text-sm md:text-base whitespace-pre-wrap leading-relaxed">{article.content || 'Original content not available.'}</p>
+                   {/* Display initial content (summary or full) */}
+                   <p className="text-sm md:text-base whitespace-pre-wrap leading-relaxed mb-4">
+                     {initialContentDisplay || 'Content not available.'}
+                   </p>
+                   {/* Optionally display the full content if summary was shown first */}
+                   {displaySummaryFirst && fullContentAvailable && (
+                       <>
+                           <hr className="my-4 border-border" />
+                           <h3 className="text-md font-semibold mb-2">Full Content:</h3>
+                           <p className="text-sm md:text-base whitespace-pre-wrap leading-relaxed">
+                               {article.content}
+                           </p>
+                       </>
+                   )}
                  </ScrollArea>
                </CardContent>
              </Card>
@@ -239,6 +266,9 @@ function ArticleSkeleton() {
                 <Skeleton className="h-4 w-5/6" />
                  <Skeleton className="h-4 w-full" />
                  <Skeleton className="h-4 w-3/4" />
+                 {/* Add more lines for longer content skeleton */}
+                 <Skeleton className="h-4 w-full" />
+                 <Skeleton className="h-4 w-4/5" />
             </CardContent>
           </Card>
         </div>

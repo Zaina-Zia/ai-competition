@@ -1,4 +1,3 @@
-
 import { storage } from './firebase-config';
 import { ref, uploadString, getDownloadURL, deleteObject, listAll, StorageReference } from 'firebase/storage';
 import type { NewsArticle } from './news-scraper.interface'; // Use updated interface
@@ -161,8 +160,8 @@ export async function getArticle(articleId: string): Promise<StoredArticleData> 
         const data: StoredArticleData = await response.json();
         console.info(`Article ${articleId} retrieved successfully.`);
         // Basic validation of expected fields
-        if (!data.title || !data.url || !data.source) { // Removed check for content as it might be intentionally short
-             console.warn(`Retrieved data for article ID ${articleId} is missing required fields (title, url, source).`);
+        if (!data.title || !data.url || !data.source || !data.content) { // Check for content now
+             console.warn(`Retrieved data for article ID ${articleId} is missing required fields (title, url, source, content).`);
              // Depending on strictness, you might throw an error here
         }
 

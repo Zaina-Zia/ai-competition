@@ -1,4 +1,3 @@
-
 'use client';
 
 import type { ChangeEvent, FormEvent } from 'react';
@@ -166,9 +165,11 @@ export function NewsFeed() {
   const filteredArticles = useMemo(() => {
     return allArticles.filter((article) => {
         const sourceMatch = selectedSources.length === 0 || selectedSources.includes(article.source);
+        // Include summary in search check
         const termMatch = searchTerm === '' ||
-                          (article.title || '').toLowerCase().includes(searchTerm) || // Add null check
+                          (article.title || '').toLowerCase().includes(searchTerm) ||
                           (article.content && article.content.toLowerCase().includes(searchTerm)) ||
+                          (article.summary && article.summary.toLowerCase().includes(searchTerm)) ||
                           (article.generatedScript && article.generatedScript.toLowerCase().includes(searchTerm));
         return sourceMatch && termMatch;
     });
@@ -298,6 +299,12 @@ export function NewsFeed() {
                  const articleId = encodeBase64UrlSafe(article.url);
                  // Use URL-safe Base64 encoding of the title for image seed
                  const imageSeed = encodeBase64UrlSafe(article.title || 'fallback-title');
+                 // Determine content to display in the card preview
+                 const previewContent = article.summary || article.content; // Prefer summary, fallback to content
+                 const previewText = article.generatedScript
+                                    ? `Script: ${article.generatedScript}`
+                                    : previewContent;
+
                  return (
                     <Card key={articleId} className="overflow-hidden shadow-md hover:shadow-lg transition-shadow duration-300 ease-in-out bg-card text-card-foreground border-border group flex flex-col">
                       <Link href={`/article/${articleId}`} passHref legacyBehavior>
@@ -323,12 +330,9 @@ export function NewsFeed() {
                                   {article.title || 'Untitled Article'} {/* Add fallback title */}
                                </CardTitle>
                               <p className="text-xs text-muted-foreground mb-2">{article.source} {article.publishedDate && `- ${article.publishedDate}`}</p>
-                              {/* Show beginning of generated script if available, else content */}
+                              {/* Show preview text (script > summary > content) */}
                               <p className="text-sm text-muted-foreground line-clamp-3 flex-grow">
-                                  {article.generatedScript
-                                      ? `Script: ${article.generatedScript.substring(0, 150)}...`
-                                      : (article.content || 'Content not available.')
-                                  }
+                                  {previewText ? `${previewText.substring(0, 150)}...` : 'Content not available.'}
                                </p>
                            </div>
                         </a>

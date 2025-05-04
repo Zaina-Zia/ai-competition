@@ -1,4 +1,3 @@
-
 "use server";
 
 import axios from 'axios';
@@ -16,10 +15,11 @@ import { encodeBase64UrlSafe } from '@/lib/utils'; // Import the helper function
 interface NewsArticle {
   title: string;
   url: string;
-  content: string;
+  content: string; // This will primarily hold the *full* content after fetch attempt
   source: string;
   imageUrl?: string;
   publishedDate?: string; // Store raw date string
+  summary?: string; // Add a dedicated field for the initial summary/teaser
 }
 
 // Use StoredArticleData where the generated script is expected
@@ -50,12 +50,12 @@ interface ScrapingConfig {
   selector: {
     article: SelectorConfig;
     title: SelectorConfig;
-    content: SelectorConfig; // Primarily for summary/preview content on the main page
+    summary: SelectorConfig; // Renamed from 'content' for clarity - primarily for summary/preview on index page
     imageUrl: SelectorConfig;
     link: SelectorConfig;
     publishedDate?: SelectorConfig;
     // Selector for fetching full article content on the article's page
-    fullContent?: SelectorConfig;
+    fullContent: SelectorConfig; // Keep this for the full content fetch
   };
   preprocess?: (html: string, $: cheerio.CheerioAPI) => cheerio.CheerioAPI; // Optional HTML preprocessing, now receives CheerioAPI
   postprocess?: (article: NewsArticle) => NewsArticle; // Optional article postprocessing
@@ -92,16 +92,23 @@ const resolveUrl = (baseUrl: string, relativeUrl: string | undefined): string =>
 };
 
 /**
- * Cleans text content by removing excessive whitespace and trimming.
+ * Cleans text content by removing excessive whitespace, script/style tags, and trimming.
+ * More aggressive cleaning.
  */
 const cleanContent = (text: string | undefined): string => {
   if (!text) return '';
   return text
-    .replace(/[\n\t]+/g, ' ') // Replace newlines/tabs with spaces
-    .replace(/\s\s+/g, ' ') // Replace multiple spaces with single space
-    .replace(/<[^>]*>/g, '') // Remove any lingering HTML tags (basic removal)
+    .replace(/<script[^>]*>([\S\s]*?)<\/script>/gmi, '') // Remove script tags and content
+    .replace(/<style[^>]*>([\S\s]*?)<\/style>/gmi, '')   // Remove style tags and content
+    .replace(/<!--.*?-->/gs, '') // Remove HTML comments
+    .replace(/<[^>]*>/g, ' ')    // Replace remaining HTML tags with space
+    .replace(/[\n\t\r]+/g, ' ') // Replace newlines/tabs/CR with spaces
+    .replace(/\s\s+/g, ' ')   // Replace multiple spaces with single space
+    .replace(/Advertisement/gi, '') // Remove common ad keywords
+    .replace(/Share this story/gi, '') // Remove common sharing prompts
     .trim();
 };
+
 
 /**
  * Scores an element based on text length and tag type for selection priority.
@@ -119,7 +126,7 @@ const scoreElement = ($: cheerio.CheerioAPI, element: cheerio.Element, selector:
   try {
     let score = 0;
     const text = $element.text();
-    const textLength = cleanContent(text).length;
+    const textLength = cleanContent(text).length; // Use cleaned text length
 
     // Basic scoring: prioritize longer text
     score += textLength;
@@ -128,16 +135,18 @@ const scoreElement = ($: cheerio.CheerioAPI, element: cheerio.Element, selector:
     const tagName = element.tagName.toLowerCase();
     if (["h1", "h2", "h3"].includes(tagName)) score += 30;
     else if (["h4", "h5", "h6"].includes(tagName)) score += 15;
+    else if (tagName === 'p') score += 5; // Slightly boost paragraphs for content
 
     // Boost score if the selector hints at relevance (e.g., contains 'title' or 'headline')
     if (selector.toLowerCase().includes("title") || selector.toLowerCase().includes("headline")) score += 20;
+    if (selector.toLowerCase().includes("content") || selector.toLowerCase().includes("body") || selector.toLowerCase().includes("article")) score += 10;
 
     // Penalize if element is likely navigation, footer, or aside content
-    if ($element.parents("nav, footer, aside, [role='navigation'], [role='complementary']").length > 0) {
+    if ($element.parents("nav, footer, aside, [role='navigation'], [role='complementary'], .sidebar, .related-posts, .comments-section").length > 0) {
         score -= 50; // Reduce score significantly if it's in ignored sections
     }
-     // Penalize if the element itself is a link and we are not looking for a link
-     if (tagName === 'a' && !selector.toLowerCase().includes('link')) {
+     // Penalize if the element itself is a link and we are not looking for a link or title
+     if (tagName === 'a' && !selector.toLowerCase().includes('link') && !selector.toLowerCase().includes('title')) {
         score -= 10;
      }
 
@@ -153,21 +162,37 @@ const scoreElement = ($: cheerio.CheerioAPI, element: cheerio.Element, selector:
 /**
  * Fetches dynamic content using Puppeteer for pages requiring JavaScript rendering.
  * @param url The URL to fetch.
+ * @param waitForSelector Optional selector to wait for before getting content.
  * @returns The rendered HTML content as a string, or empty string on failure.
  */
-const fetchDynamicContent = async (url: string): Promise<string> => {
+const fetchDynamicContent = async (url: string, waitForSelector?: string): Promise<string> => {
   let browser;
   try {
-    console.info(`Fetching dynamic content for: ${url}`);
-    // Using 'new' headless mode is generally recommended
+    console.info(`Fetching dynamic content for: ${url}${waitForSelector ? ` (waiting for: ${waitForSelector})` : ''}`);
     browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox', '--disable-setuid-sandbox'] });
     const page = await browser.newPage();
-    // Increase timeout and use networkidle0 for potentially complex pages
+    // Set a realistic viewport and user agent
+    await page.setViewport({ width: 1280, height: 800 });
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
+
     await page.goto(url, { waitUntil: 'networkidle0', timeout: 45000 });
-    // Optional: Wait for a specific selector if needed, e.g., await page.waitForSelector('main article', { timeout: 10000 });
+
+    if (waitForSelector) {
+        try {
+            console.debug(`Waiting for selector "${waitForSelector}" on ${url}`);
+            await page.waitForSelector(waitForSelector, { timeout: 15000 }); // Wait up to 15s for specific content
+            console.debug(`Selector "${waitForSelector}" found on ${url}`);
+        } catch (waitError) {
+            console.warn(`Selector "${waitForSelector}" not found on ${url} after timeout. Proceeding with available content.`);
+        }
+    } else {
+        // Fallback: Add a small delay after network idle if no selector specified
+         await page.waitForTimeout(1000);
+    }
+
     const content = await page.content();
     await browser.close();
-    console.info(`Successfully fetched dynamic content for: ${url}`);
+    console.info(`Successfully fetched dynamic content (${content.length} bytes) for: ${url}`);
     return content;
   } catch (error) {
     console.error(`Error fetching dynamic content for ${url}:`, { error: (error as Error).message });
@@ -191,23 +216,16 @@ const scrapingConfig: Record<string, ScrapingConfig> = {
     url: 'https://www.bbc.com/news',
     sourceName: 'BBC',
     selector: {
-      // Find containers likely holding individual news items
       article: { selectors: ['div[type="article"]', 'div[data-testid*="card"]', 'article[class*="ArticleWrapper"]', 'li[class*="ListItem"]'] },
-      // Find the main link within the article container
       link: { selectors: ['a[data-linktrack*="news"]', 'a[class*="Link"]', 'a'], required: true },
-      // Find the title within the article container
       title: { selectors: ['h3[data-testid="card-headline"]', 'h2', 'h3', 'span[class*="Title"]'], minLength: 10, required: true },
-      // Find a short summary/description within the article container
-      content: { selectors: ['p[data-testid="card-description"]', 'p[class*="Summary"]', 'p'], minLength: 20 },
-       // Find the main image within the article container
+      summary: { selectors: ['p[data-testid="card-description"]', 'p[class*="Summary"]', 'p'], minLength: 20 },
       imageUrl: { selectors: ['div[data-testid="card-image"] img', 'img'] },
-      // Find the publication time within the article container
       publishedDate: { selectors: ['time[datetime]', 'span[class*="Timestamp"]'] },
-      // Selectors for fetching the *full* article text on the article page itself
       fullContent: { selectors: ['main#main-content article', 'article', 'div[data-component="text-block"]', 'p'] }
     },
-    fetchFullArticle: true, // Attempt to get full content from article page
-    rateLimitMs: 1200, // Be respectful
+    fetchFullArticle: true,
+    rateLimitMs: 1200,
     headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Accept-Language': 'en-US,en;q=0.9',
@@ -220,32 +238,33 @@ const scrapingConfig: Record<string, ScrapingConfig> = {
       article: { selectors: ['li[class*="story-collection"]', 'div[data-testid="MediaStoryCard"]', 'article'] },
       link: { selectors: ['a[data-testid="Heading"]', 'a[href*="/world/"]', 'a'], required: true },
       title: { selectors: ['a[data-testid="Heading"] span', 'h3', 'h2'], minLength: 10, required: true },
-      content: { selectors: ['p'], minLength: 20 }, // Often minimal on index pages
+      summary: { selectors: ['p'], minLength: 20 }, // Often minimal on index pages
       imageUrl: { selectors: ['img[data-testid*="image"]', 'img'] },
       publishedDate: { selectors: ['time[datetime]', 'span[class*="date"]'] },
-      fullContent: { selectors: ['article[data-testid="article"]', '#main-content', 'p'] }
+      fullContent: { selectors: ['article[data-testid="article"]', '#main-content', 'div[class*="article-body"]', 'p'] } // Added more specific body selector
     },
     fetchFullArticle: true,
     rateLimitMs: 1500,
     headers: {
-      'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)', // Try a different UA
+      'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
     }
   },
   CNN: {
       url: 'https://www.cnn.com/',
       sourceName: 'CNN',
-      useDynamicContent: true, // CNN often relies heavily on JS
+      useDynamicContent: true,
       selector: {
           article: { selectors: ['article[class*="container"]', 'div[class*="card"]', 'section[data-zone-label] li'] },
           link: { selectors: ['a[data-link_type="article"]', 'a[href^="/"]'], required: true },
           title: { selectors: ['span[data-editable="headline"]', '.container__headline-text', 'h2', 'h3'], minLength: 10, required: true },
-          content: { selectors: ['div[data-editable="description"]', 'p'], minLength: 15 },
+          summary: { selectors: ['div[data-editable="description"]', 'p'], minLength: 15 },
           imageUrl: { selectors: ['img[class*="image__dam"]', 'picture img'] },
           publishedDate: { selectors: ['div[class*="timestamp"]', 'time'] },
-          fullContent: { selectors: ['article div[class*="article__content"]', '.article__content', 'p'] }
+          // More specific content selectors for CNN
+          fullContent: { selectors: ['div[class*="article__content"]', '.article__content', 'div.paragraph', 'p'] }
       },
       fetchFullArticle: true,
-      rateLimitMs: 2000, // Give dynamic loading more time/breathing room
+      rateLimitMs: 2000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
     }
@@ -257,7 +276,7 @@ const scrapingConfig: Record<string, ScrapingConfig> = {
           article: { selectors: ['article.article', 'div.info'] },
           link: { selectors: ['a[href^="https://www.foxnews.com/"]', 'h2 > a', 'h3 > a', 'a'], required: true },
           title: { selectors: ['h2.title', 'h3.title', 'h1'], minLength: 10, required: true },
-          content: { selectors: ['p.dek', 'p'], minLength: 15 },
+          summary: { selectors: ['p.dek', 'p'], minLength: 15 },
           imageUrl: { selectors: ['img.image-m'] },
           publishedDate: { selectors: ['span.time', 'time'] },
           fullContent: { selectors: ['div.article-body', 'p'] }
@@ -275,7 +294,7 @@ const scrapingConfig: Record<string, ScrapingConfig> = {
           article: { selectors: ['article.item', 'div.story-wrap'] },
           link: { selectors: ['a[href*=".npr.org/"]', 'h2 > a', 'h3 > a', 'a'], required: true },
           title: { selectors: ['h2.title', 'h3.title'], minLength: 10, required: true },
-          content: { selectors: ['p.teaser', 'p'], minLength: 20 },
+          summary: { selectors: ['p.teaser', 'p'], minLength: 20 },
           imageUrl: { selectors: ['img.img'] },
           publishedDate: { selectors: ['time[datetime]'] },
           fullContent: { selectors: ['div#storytext', 'p'] }
@@ -290,10 +309,10 @@ const scrapingConfig: Record<string, ScrapingConfig> = {
           article: { selectors: ['div.fc-item', 'section[data-component="container"] li'] },
           link: { selectors: ['a[data-link-name="article"]', 'a[href*="theguardian.com/"]', 'a'], required: true },
           title: { selectors: ['span.show-underline', 'h3'], minLength: 10, required: true },
-          content: { selectors: ['div.fc-item__standfirst', 'p'], minLength: 20 },
+          summary: { selectors: ['div.fc-item__standfirst', 'p'], minLength: 20 },
           imageUrl: { selectors: ['img'] },
           publishedDate: { selectors: ['time[datetime]'] },
-          fullContent: { selectors: ['div#maincontent', 'p'] }
+          fullContent: { selectors: ['div#maincontent', 'article[class*="content__article"]', 'p'] } // Added specific article body selector
       },
       fetchFullArticle: true,
       rateLimitMs: 1100,
@@ -301,22 +320,19 @@ const scrapingConfig: Record<string, ScrapingConfig> = {
   'New York Times': {
       url: 'https://www.nytimes.com/',
       sourceName: 'New York Times',
-      // NYT is often behind a paywall or requires JS heavily. Dynamic might be needed.
-      // This config might only get teasers without dynamic loading or login.
-      useDynamicContent: false, // Start without, enable if needed
+      useDynamicContent: true, // NYT almost always requires JS
       selector: {
           article: { selectors: ['section[data-testid="block-G"] li', 'article', 'div[class*="StoryCard"]'] },
           link: { selectors: ['a[href^="/"]', 'h3 > a', 'a'], required: true },
           title: { selectors: ['p[id^="title_"]', 'h3', 'h2'], minLength: 10, required: true },
-          content: { selectors: ['p[class*="summary"]', 'p'], minLength: 20 },
+          summary: { selectors: ['p[class*="summary"]', 'p'], minLength: 20 },
           imageUrl: { selectors: ['img'] },
           publishedDate: { selectors: ['time', 'span[data-testid="todays-date"]'] },
-          fullContent: { selectors: ['section[name="articleBody"]', 'p'] }
+          fullContent: { selectors: ['section[name="articleBody"]', 'div.StoryBodyCompanionColumn', 'p'] } // Added common NYT body div
       },
       fetchFullArticle: true, // Will likely fail often without login/subscription
-      rateLimitMs: 2500, // Be very cautious with NYT
+      rateLimitMs: 2500,
       headers: {
-         // Might require specific cookies or headers if attempting authenticated scraping (not recommended)
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       }
   },
@@ -327,7 +343,7 @@ const scrapingConfig: Record<string, ScrapingConfig> = {
             article: { selectors: ['article.gc', 'div.card-news'] },
             link: { selectors: ['a.gc__link', 'a[href^="/news/"]', 'a[href^="/features/"]', 'a'], required: true },
             title: { selectors: ['a.gc__link span', 'h3', 'h2'], minLength: 10, required: true },
-            content: { selectors: ['div.gc__excerpt p', 'p'], minLength: 20 },
+            summary: { selectors: ['div.gc__excerpt p', 'p'], minLength: 20 },
             imageUrl: { selectors: ['img.gc__image'] },
             publishedDate: { selectors: ['div.date-simple', 'time'] },
             fullContent: { selectors: ['main#main-content div.wysiwyg', 'p'] }
@@ -338,7 +354,7 @@ const scrapingConfig: Record<string, ScrapingConfig> = {
             'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
         }
     },
-     // Placeholder for Associated Press - requires finding a suitable public news section
+    // Placeholder for Associated Press - requires finding a suitable public news section
     // AP often distributes via partners, direct scraping might be difficult.
     // 'Associated Press': {
     //     url: 'https://apnews.com/', // Example URL, might need refinement
@@ -354,11 +370,11 @@ const genericConfig: Omit<ScrapingConfig, 'url' | 'sourceName'> = {
   selector: {
     article: { selectors: ['article', 'div[class*="item"]', 'div[class*="card"]', 'li'] },
     title: { selectors: ['h1', 'h2', 'h3', '[class*="title"]', '[class*="headline"]'], minLength: 10, required: true },
-    content: { selectors: ['p', 'div[class*="content"]', 'div[class*="text"]', 'div[class*="summary"]', 'div[class*="excerpt"]'], minLength: 20 },
+    summary: { selectors: ['p', 'div[class*="summary"]', 'div[class*="excerpt"]', '[class*="teaser"]'], minLength: 20 },
     imageUrl: { selectors: ['img', 'picture img', '[class*="image"] img'] },
     link: { selectors: ['a[href]'], required: true },
     publishedDate: { selectors: ['time', 'span[class*="date"]', 'div[class*="date"]'] },
-    fullContent: { selectors: ['article', 'main', 'div[class*="body"]', 'div[class*="content"]', 'p'] }
+    fullContent: { selectors: ['article', 'main', 'div[class*="body"]', 'div[class*="content"]', 'section[class*="content"]', 'p'] }
   },
   fetchFullArticle: true, // Attempt generically
   rateLimitMs: 1500,
@@ -411,8 +427,10 @@ async function performScraping(source: string, limit: number, concurrency: numbe
     };
 
     if (config.useDynamicContent) {
-      html = await fetchDynamicContent(config.url);
-      if (!html) throw new Error('Dynamic content fetching failed.');
+        // Pass a potentially relevant selector to wait for on the *index* page if needed
+        const indexWaitForSelector = config.selector.article.selectors[0]; // Example: wait for the first article selector
+        html = await fetchDynamicContent(config.url, indexWaitForSelector);
+        if (!html) throw new Error('Dynamic content fetching failed for index page.');
     } else {
       const response = await axios.get(config.url, {
         headers: requestHeaders,
@@ -448,36 +466,40 @@ async function performScraping(source: string, limit: number, concurrency: numbe
       const selectBest = (
           context: cheerio.Cheerio<cheerio.Element>, // The context to search within (e.g., the article element)
           selectorConfig: SelectorConfig,
-          field: keyof NewsArticle | 'link' // Include 'link' to handle href extraction
+          field: keyof NewsArticle | 'link' | 'summary' | 'fullContent' // Specify field type
       ): string => {
           let bestMatchText = '';
           let bestScore = -1;
+          let bestElement : cheerio.Element | null = null;
 
           for (const selector of selectorConfig.selectors) {
-              const elements = context.find(selector); // Find elements *within* the context
-                // console.debug(`Selector '${selector}' found ${elements.length} elements for field '${field}'`);
+              const elements = context.find(selector);
 
               elements.each((_, el) => {
                    const $el = $(el);
                     let currentText = '';
                     let score = 0;
+                    let currentElement : cheerio.Element | null = el;
+
+                    // Skip elements that are visually hidden (basic check)
+                    if ($el.css('display') === 'none' || $el.css('visibility') === 'hidden') {
+                        return; // Continue to next element
+                    }
+
 
                     if (field === 'link') {
                         currentText = $el.attr('href') || '';
-                        // Simple score for links: presence and basic validity
                         score = currentText.startsWith('http') || currentText.startsWith('/') ? 1 : 0;
                     } else if (field === 'imageUrl') {
-                         // Handle different attributes for images
-                        currentText = $el.attr('src') || $el.attr('data-src') || $el.attr('srcset')?.split(' ')[0] || ''; // Basic srcset handling
-                         // Simple score: presence of src/data-src/srcset
+                        currentText = $el.attr('src') || $el.attr('data-src') || $el.attr('srcset')?.split(' ')[0] || '';
                         score = currentText ? 1 : 0;
                     } else if (field === 'publishedDate') {
-                       // Attempt to get datetime attribute first, then text
                        currentText = $el.attr('datetime') || cleanContent($el.text());
-                       score = currentText ? 1 : 0; // Simple presence score
+                       score = currentText ? 1 : 0;
                     } else {
+                         // For title, summary, fullContent - use scoring
                         currentText = cleanContent($el.text());
-                        score = scoreElement($, el, selector); // Use scoring for text fields
+                        score = scoreElement($, el, selector);
                     }
 
                     const meetsMinLength = !selectorConfig.minLength || currentText.length >= selectorConfig.minLength;
@@ -485,17 +507,34 @@ async function performScraping(source: string, limit: number, concurrency: numbe
                     if (meetsMinLength && score > bestScore) {
                         bestScore = score;
                         bestMatchText = currentText;
+                        bestElement = currentElement;
                     }
               });
 
-               // If we found a good match with this selector, maybe stop early? (Optional optimization)
+               // If we found a good match, maybe stop early? (Optional)
                // if (bestScore > 50 && field !== 'link' && field !== 'imageUrl') break;
           }
 
 
           if (selectorConfig.required && !bestMatchText) {
               console.warn(`Required field '${field}' not found for an article using selectors: ${selectorConfig.selectors.join(', ')}`);
-              // Returning empty string, validation will happen later
+          }
+
+          // For 'fullContent', try to get the HTML of the best element for potentially better structure
+          if (field === 'fullContent' && bestElement) {
+              try {
+                   // Extract HTML, then clean it
+                   const elementHtml = $(bestElement).html();
+                   if (elementHtml) {
+                       const cleanedHtmlText = cleanContent(elementHtml); // Apply cleaning to inner HTML
+                       if (cleanedHtmlText.length > bestMatchText.length) { // Use if longer
+                           bestMatchText = cleanedHtmlText;
+                           console.debug(`Using cleaned HTML content for '${field}', length: ${bestMatchText.length}`);
+                       }
+                   }
+              } catch (htmlError) {
+                   console.warn(`Could not get/clean HTML for ${field}, falling back to text. Error: ${(htmlError as Error).message}`);
+              }
           }
 
            // console.debug(`Best match for field '${field}': '${bestMatchText.substring(0, 50)}...' (Score: ${bestScore})`);
@@ -517,8 +556,8 @@ async function performScraping(source: string, limit: number, concurrency: numbe
 
               if (!article.url || !article.url.startsWith('http') || seenUrls.has(article.url)) {
                  if (relativeLink && !seenUrls.has(resolveUrl(config.url, relativeLink))) {
-                      // Don't log skipped duplicates frequently, maybe only in debug mode
-                      // console.debug(`Skipping article: Invalid or duplicate URL ('${article.url || relativeLink}')`);
+                    // Debug log for skipped non-duplicate invalid URLs
+                    console.debug(`Skipping article: Invalid URL ('${article.url || relativeLink}')`);
                  }
                  continue; // Skip if URL is invalid, non-http, or already processed
               }
@@ -530,15 +569,17 @@ async function performScraping(source: string, limit: number, concurrency: numbe
                     continue; // Skip if required title is missing
                 }
 
-               // 3. Extract Initial Content (Summary/Teaser)
-               article.content = selectBest($element, config.selector.content, 'content');
+               // 3. Extract Initial Summary/Teaser
+               article.summary = selectBest($element, config.selector.summary, 'summary');
+               // Initialize main content with summary, it will be overwritten if full fetch succeeds
+               article.content = article.summary;
+
 
                // 4. Extract Image URL
                let rawImageUrl = selectBest($element, config.selector.imageUrl, 'imageUrl');
                article.imageUrl = resolveUrl(config.url, rawImageUrl);
                 // Add common lazy-loading patterns if needed:
                 if (!article.imageUrl && rawImageUrl && rawImageUrl.includes('data:image')) {
-                     // Handle base64 encoded images if necessary, maybe skip or log
                      console.debug(`Skipping base64 image for ${article.url}`);
                      article.imageUrl = undefined; // Or set to placeholder
                  }
@@ -549,21 +590,23 @@ async function performScraping(source: string, limit: number, concurrency: numbe
                 article.publishedDate = selectBest($element, config.selector.publishedDate, 'publishedDate');
               }
 
-               // 6. Fetch Full Article Content (if configured and initial content is short)
-                // Check if fetching full article is enabled and if content is too short or missing
+               // 6. Fetch Full Article Content (More Aggressive)
                let fetchedFullContent = false;
-               if (config.fetchFullArticle && config.selector.fullContent && (!article.content || article.content.length < 100)) {
+               // ALWAYS attempt fetch if configured and selectors exist
+               if (config.fetchFullArticle && config.selector.fullContent?.selectors.length > 0) {
                     await limitFullArticleFetch(async () => {
                         try {
-                            // Respect rate limiting
                             if (config.rateLimitMs) await wait(config.rateLimitMs);
 
-                            console.debug(`Fetching full content for: ${article.url}`);
+                            console.info(`Fetching full content for: ${article.url}`);
                             let articleHtml = '';
-                            if (config.useDynamicContent) { // Use dynamic fetching for full article if source uses it
-                                articleHtml = await fetchDynamicContent(article.url!);
+                            // Determine wait selector for the specific article page
+                            const articleWaitForSelector = config.selector.fullContent!.selectors[0]; // Wait for the first full content selector
+
+                            if (config.useDynamicContent) {
+                                articleHtml = await fetchDynamicContent(article.url!, articleWaitForSelector);
                             } else {
-                                const articleResponse = await axios.get(article.url!, { headers: requestHeaders, timeout: 15000 });
+                                const articleResponse = await axios.get(article.url!, { headers: requestHeaders, timeout: 20000 }); // Increased timeout
                                 articleHtml = articleResponse.data;
                             }
 
@@ -572,9 +615,8 @@ async function performScraping(source: string, limit: number, concurrency: numbe
                             }
 
                             const article$ = cheerio.load(articleHtml);
-
-                            // Apply preprocessing to article page if defined
                             let processedArticle$ = article$;
+
                             if (config.preprocess) {
                                 try {
                                     processedArticle$ = config.preprocess(articleHtml, article$);
@@ -583,31 +625,43 @@ async function performScraping(source: string, limit: number, concurrency: numbe
                                 }
                             }
 
-                            // Remove clutter before extracting full content - more aggressive removal
-                            processedArticle$('script, style, nav, footer, aside, header, [role="banner"], [role="navigation"], [role="complementary"], .ad, .advert, .related-links, .comments, figure, form, noscript, iframe, .social-links, .print-button').remove();
+                            // More aggressive clutter removal on article page
+                            processedArticle$('script, style, nav, footer, aside, header, [role="banner"], [role="navigation"], [role="complementary"], .ad, .advert, .related-links, .comments, figure, form, noscript, iframe, .social-links, .print-button, .cookie-banner, .subscription-prompt, .share-buttons, #sidebar, .author-bio, .video-player, noscript').remove();
 
-                             // Select full content using dedicated selectors - prioritize longer text
-                            const fullContentText = selectBest(processedArticle$('body'), config.selector.fullContent!, 'content');
+                             // Select full content using dedicated selectors
+                            const fullContentText = selectBest(processedArticle$('body'), config.selector.fullContent!, 'fullContent'); // Use 'fullContent' field type
 
-
-                            if (fullContentText && fullContentText.length > (article.content?.length || 0)) {
-                                // Limit length to avoid excessively large data
-                                article.content = cleanContent(fullContentText).slice(0, 5000);
+                            const initialContentLength = article.content?.length || 0;
+                            if (fullContentText && fullContentText.length > initialContentLength) {
+                                // Use the fetched full content, apply cleaning and length cap
+                                article.content = cleanContent(fullContentText).slice(0, 8000); // Increased cap
                                 fetchedFullContent = true;
-                                console.debug(`Successfully fetched and updated full content for: ${article.url}`);
+                                console.info(`Successfully fetched and updated full content for: ${article.url}. Initial length: ${initialContentLength}, Fetched length: ${fullContentText.length}, Final length: ${article.content.length}`);
+                            } else if (fullContentText) {
+                                 console.info(`Fetched full content for ${article.url} (Length: ${fullContentText.length}) was not longer than initial content (Length: ${initialContentLength}). Keeping initial content.`);
+                                 // Optionally, still clean the initial content more aggressively
+                                 article.content = cleanContent(article.content).slice(0, 8000);
                             } else {
-                                console.debug(`Full content fetch for ${article.url} did not yield better content.`);
+                                console.warn(`Full content fetch for ${article.url} did not yield any text using selectors: ${config.selector.fullContent!.selectors.join(', ')}. Keeping initial content.`);
+                                // Optionally, still clean the initial content more aggressively
+                                 article.content = cleanContent(article.content).slice(0, 8000);
                             }
                         } catch (error) {
                             console.warn(`Failed to fetch or process full content for ${article.url}:`, { error: (error as Error).message });
+                            // Fallback: Ensure existing content (summary) is cleaned and capped
+                             article.content = cleanContent(article.content).slice(0, 8000);
                         }
                     });
+               } else {
+                   // If not fetching full article, ensure summary is cleaned and capped
+                   article.content = cleanContent(article.summary).slice(0, 8000); // Use summary as content
                }
 
 
                 // 7. Final Validation and Postprocessing
-                 if (!article.content || article.content.length < 50) { // Stricter content check after potential full fetch
-                    console.warn(`Skipping article: Content too short or missing after fetch attempt. URL: ${article.url}`);
+                 // Use a more lenient check, ensuring *some* content exists
+                 if (!article.content || article.content.length < 20) {
+                    console.warn(`Skipping article: Content too short or missing after fetch attempt. Length: ${article.content?.length ?? 0}. URL: ${article.url}`);
                     continue;
                  }
 
@@ -671,7 +725,6 @@ export async function scrapeAndStoreArticles(
       const sourceStartTime = Date.now();
       try {
           // Perform scraping for the source
-          // Adjust concurrency for sub-tasks (fetching full articles), ensure at least 1
           const subConcurrency = Math.max(1, Math.floor(concurrency / sources.length));
           const articles = await performScraping(source, limit, subConcurrency);
           totalArticlesScraped += articles.length;
@@ -683,17 +736,23 @@ export async function scrapeAndStoreArticles(
             overallLimit(async () => {
               const articleProcessStart = Date.now();
               try {
-                // 1. Generate summary using Genkit flow
-                console.debug(`Summarizing article: ${article.url}`);
+                // 1. Generate summary using Genkit flow (using the potentially longer 'content' field)
+                console.debug(`Summarizing article: ${article.url} (Content length: ${article.content.length})`);
                 const { script } = await summarizeArticle({ content: article.content });
                 console.debug(`Summarized article: ${article.url} in ${Date.now() - articleProcessStart}ms`);
 
                 // 2. Prepare data for storage
-                // Encode URL to create a safe filename/ID using the utility function
                  const articleId = encodeBase64UrlSafe(article.url);
 
+                // Store both summary (if available) and the main content
                 const dataToStore: StoredArticleData = {
-                  ...article,
+                  title: article.title,
+                  url: article.url,
+                  source: article.source,
+                  content: article.content, // The main (potentially full) content
+                  summary: article.summary, // The initial summary/teaser
+                  imageUrl: article.imageUrl,
+                  publishedDate: article.publishedDate,
                   generatedScript: script,
                 };
 
@@ -727,8 +786,6 @@ export async function scrapeAndStoreArticles(
   await Promise.all(scrapingPromises);
 
   const durationMs = Date.now() - startTime;
-  // Calculate success rate based on target vs actual processed articles
-  // Use totalArticlesScraped as the denominator for a more realistic success rate of processing *scraped* articles
   const successRate = totalArticlesScraped > 0 ? processedCount / totalArticlesScraped : (sources.length > 0 ? 0 : 1); // Avoid division by zero
 
   console.info(`--- Finished scrapeAndStoreArticles --- Duration: ${durationMs}ms, Processed: ${processedCount}, Scraped: ${totalArticlesScraped}, Errors: ${allErrors.length}`);
@@ -751,5 +808,4 @@ export async function scrapeAndStoreArticles(
 }
 
 // Optional: Add a function to fetch a single article's full content on demand
-// This could be useful if you only store summaries initially.
 // export async function fetchFullArticleContent(url: string): Promise<string | null> { ... }
