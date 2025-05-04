@@ -18,11 +18,14 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      {/* Move head content directly under html, removing explicit <head> tag to avoid whitespace issues */}
+      {/* No explicit <head> tag needed in App Router RootLayout */}
+
       {/* Add Import Map for Three.js and TalkingHead CDN */}
+      {/* IMPORTANT: This needs to be directly under <html> or in <head> if using Pages Router _document.js */}
+      {/* Using dangerouslySetInnerHTML is correct for type="importmap" */}
       <Script
         id="import-map"
-        strategy="beforeInteractive"
+        strategy="beforeInteractive" // Ensures it loads before other scripts needing these modules
         type="importmap"
         dangerouslySetInnerHTML={{
           __html: `
@@ -36,7 +39,9 @@ export default function RootLayout({
           `,
         }}
       />
+      {/* Favicon link */}
       <link rel="icon" href="/favicon.ico" sizes="any" />
+
       <body
         className={cn(
           'min-h-screen bg-background font-sans antialiased',

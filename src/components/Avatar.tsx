@@ -2,12 +2,8 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-// Explicitly declare window to avoid TypeScript errors
-declare global {
-    interface Window {
-        TalkingHead?: any; // Use 'any' or a more specific type if available
-    }
-}
+// Removed direct import - rely on dynamic import + import map
+// import { TalkingHead } from 'talkinghead';
 
 import { Skeleton } from './ui/skeleton';
 import { AlertTriangle } from 'lucide-react';
@@ -23,7 +19,7 @@ interface AvatarProps {
 
 const Avatar: React.FC<AvatarProps> = ({
   textToSpeak,
-  avatarUrl = '/avatars/scene.gltf', // Default avatar path
+  avatarUrl = '/avatars/scene.gltf', // Ensure this GLTF file exists in public/avatars
   className,
   onReady,
   onError,
@@ -33,56 +29,56 @@ const Avatar: React.FC<AvatarProps> = ({
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Ref for retry timeout
 
   const initializeAvatar = (TalkingHeadClass: any) => {
       if (!avatarRef.current || headRef.current) return; // Already initialized or no ref
 
-      console.log("Initializing TalkingHead...");
-      setIsLoading(true);
-      setError(null);
+      console.log('Initializing TalkingHead...');
+      setError(null); // Clear previous errors
 
       try {
         const headInstance = new TalkingHeadClass(avatarRef.current, {
           ttsEndpoint: '/api/tts', // Use the Next.js API route proxy
           lipsyncModules: ['en'],
-          onerror: (err: Error) => { // Add type annotation for err
-            console.error('TalkingHead Error:', err);
+          onerror: (err: Error) => {
+            console.error('TalkingHead Runtime Error:', err);
             const errMsg = `TalkingHead runtime error: ${err.message}`;
             setError(errMsg);
             onError?.(errMsg); // Notify parent component
-            setIsLoading(false);
+            setIsLoading(false); // Stop loading on runtime error
+            setIsSpeaking(false);
           },
           onload: () => {
             console.log('TalkingHead base loaded.');
-            // Wait for avatar model to load
-          }
+            // Base loaded, now load the avatar model
+          },
         });
         headRef.current = headInstance; // Store instance
 
         console.log(`Loading avatar model from: ${avatarUrl}`);
         headInstance.showAvatar({
           url: avatarUrl,
-          body: 'F',
+          body: 'F', // Example body type
           avatarMood: 'neutral',
           ttsLang: 'en-US', // Default language for iSpeech
-          ttsVoice: 'usenglishfemale', // Default voice for iSpeech (check available voices)
+          ttsVoice: 'usenglishfemale', // Default voice for iSpeech
           lipsyncLang: 'en',
         }).then(() => {
           console.log('Avatar loaded successfully.');
           setIsLoading(false);
+          setError(null); // Clear error on successful load
           onReady?.(); // Notify parent component
         }).catch((modelError: any) => {
           console.error('Failed to load avatar model:', modelError);
-          const errMsg = `Failed to load avatar model: ${modelError.message || 'Unknown error'}`;
+          const errMsg = `Failed to load avatar model: ${modelError?.message || 'Unknown model error'}`;
           setError(errMsg);
           onError?.(errMsg);
           setIsLoading(false);
         });
 
       } catch (initErr: any) {
-        console.error('Failed to initialize TalkingHead:', initErr);
-        const errMsg = `Initialization failed: ${initErr.message || 'Unknown error'}`;
+        console.error('Failed to initialize TalkingHead instance:', initErr);
+        const errMsg = `Initialization failed: ${initErr?.message || 'Unknown initialization error'}`;
         setError(errMsg);
         onError?.(errMsg);
         setIsLoading(false);
@@ -91,122 +87,123 @@ const Avatar: React.FC<AvatarProps> = ({
 
   useEffect(() => {
     let isMounted = true; // Flag to prevent state updates on unmounted component
-    const maxRetries = 10;
-    let retries = 0;
 
-    const checkAndInit = () => {
-        // Check if running in a browser environment first
-        if (typeof window !== 'undefined') {
-            if (window.TalkingHead) {
-                console.log("window.TalkingHead found, initializing...");
-                if (isMounted) {
-                    initializeAvatar(window.TalkingHead);
-                }
-            } else {
-                retries++;
-                if (retries <= maxRetries && isMounted) {
-                    console.log(`TalkingHead not found on window, retrying (${retries}/${maxRetries})...`);
-                    retryTimeoutRef.current = setTimeout(checkAndInit, 500); // Wait 500ms and retry
-                } else if (isMounted) {
-                    const errMsg = `TalkingHead not available on window object after ${maxRetries} retries. Check the import map script in layout.tsx.`;
-                    console.error(errMsg);
-                    setError(errMsg);
-                    onError?.(errMsg);
-                    setIsLoading(false);
-                }
+    const loadAndInit = async () => {
+        // Ensure we are in a browser environment
+        if (typeof window === 'undefined' || !avatarRef.current) {
+            console.warn("Not in a browser environment or avatarRef not ready, skipping TalkingHead initialization.");
+            if (isMounted) setIsLoading(false); // Ensure loading state is cleared
+            return;
+        }
+
+        console.log("Attempting to dynamically import TalkingHead...");
+        setIsLoading(true); // Start loading
+        setError(null); // Clear previous errors
+
+        try {
+            // Dynamically import TalkingHead. The browser uses the import map.
+            const { TalkingHead } = await import('talkinghead');
+            console.log("TalkingHead imported successfully.");
+
+            if (isMounted) {
+                if (TalkingHead) {
+                     initializeAvatar(TalkingHead);
+                 } else {
+                     throw new Error("Dynamic import succeeded, but TalkingHead module is undefined or invalid.");
+                 }
             }
-        } else {
-            // Not in a browser environment, cannot initialize
-            console.warn("Not in a browser environment, skipping TalkingHead initialization.");
-             if (isMounted) {
-                setIsLoading(false); // Ensure loading state is cleared if not in browser
-             }
+        } catch (importError: any) {
+            console.error("Failed to dynamically import or initialize TalkingHead:", importError);
+             const errMsg = `Failed to load TalkingHead module. Check the browser console for network errors related to the CDN script in the import map. Error: ${importError?.message || 'Unknown import error'}`;
+            if (isMounted) {
+                 setError(errMsg);
+                 onError?.(errMsg);
+                 setIsLoading(false);
+            }
         }
     };
 
-    checkAndInit(); // Start checking
+    loadAndInit(); // Attempt to load and initialize
 
     // Cleanup function
     return () => {
       isMounted = false; // Mark as unmounted
-      if (retryTimeoutRef.current) {
-          clearTimeout(retryTimeoutRef.current); // Clear pending timeout
-      }
       console.log('Cleaning up Avatar component...');
       if (headRef.current) {
         try {
           headRef.current.close(); // Ensure close method exists and is called
           console.log('TalkingHead instance closed.');
-        } catch (cleanupError) {
+        } catch (cleanupError: any) {
           console.error('Error closing TalkingHead:', cleanupError);
         }
       }
-       headRef.current = null; // Clear the ref
+      headRef.current = null; // Clear the ref
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [avatarUrl]); // Re-initialize if avatarUrl changes
 
   // Effect to handle speaking when textToSpeak changes
   useEffect(() => {
-    // Ensure we are in a browser environment before trying to speak
      if (typeof window === 'undefined' || !headRef.current || isLoading || error) {
-       return; // Don't attempt to speak if not ready or not in browser
+       return; // Don't attempt to speak if not ready, loading, errored, or not in browser
      }
 
     if (textToSpeak && !isSpeaking) {
       console.log('Attempting to speak:', textToSpeak.substring(0, 50) + '...');
       setIsSpeaking(true);
-      headRef.current.speakText(textToSpeak)
-        .then(() => {
-          console.log('Finished speaking.');
-           if (isSpeaking) { // Check if still supposed to be speaking before setting state
-              setIsSpeaking(false);
-           }
-        })
-        .catch((speakError: any) => {
-          console.error('Failed to speak text:', speakError);
-          const errMsg = `Speaking error: ${speakError.message || 'Unknown error'}`;
-          // Only update state if component is still mounted and supposed to be speaking
-           if (isSpeaking) {
-              setError(errMsg);
-              onError?.(errMsg);
-              setIsSpeaking(false);
-           }
-        });
-    } else if (!textToSpeak && isSpeaking) {
-       // Optionally handle stopping speech if text becomes null while speaking
-       // headRef.current?.stopSpeaking(); // Requires stopSpeaking method in TalkingHead
-        setIsSpeaking(false); // Assume stopped if text is cleared
+      setError(null); // Clear previous speech errors
+      headRef.current.speakText(textToSpeak).then(() => {
+        console.log('Finished speaking.');
+        if (isSpeaking) setIsSpeaking(false); // Update state only if it was supposed to be speaking
+      }).catch((speakError: any) => {
+        console.error('Failed to speak text:', speakError);
+        const errMsg = `Speaking error: ${speakError?.message || 'Unknown error'}`;
+        if (isSpeaking) { // Update state only if it was supposed to be speaking
+            setError(errMsg);
+            onError?.(errMsg);
+            setIsSpeaking(false);
+        }
+      });
     }
-    // Added isSpeaking to dependencies to re-evaluate if it changes externally (less likely but safer)
-  }, [textToSpeak, isLoading, error, isSpeaking, onError]);
+    // Note: No explicit stop logic if textToSpeak becomes null while speaking.
+    // TalkingHead might handle this internally, or you might add headRef.current.stop() if available.
 
+  }, [textToSpeak, isLoading, error, isSpeaking, onError]); // Depend on textToSpeak, loading state, error state, and speaking state
 
   return (
-    <div ref={avatarRef} className={cn("relative w-full aspect-video bg-muted rounded-md flex items-center justify-center text-muted-foreground overflow-hidden", className)} data-ai-hint="animated talking avatar">
+    <div
+      ref={avatarRef}
+      className={cn(
+        'relative w-full aspect-video bg-muted rounded-md flex items-center justify-center text-muted-foreground overflow-hidden',
+        className
+      )}
+      data-ai-hint="animated talking avatar"
+    >
       {isLoading && (
         <div className="absolute inset-0 flex items-center justify-center bg-muted/50">
           <Skeleton className="w-3/4 h-3/4 rounded-lg" />
+          <p className="absolute bottom-2 text-xs text-muted-foreground animate-pulse">Loading Avatar...</p>
         </div>
       )}
       {error && !isLoading && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-destructive/10 text-destructive p-4 text-center">
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-destructive/10 text-destructive p-4 text-center ">
            <AlertTriangle className="w-8 h-8 mb-2" />
           <p className="text-sm font-semibold">Avatar Error</p>
-          <p className="text-xs mt-1">{error}</p>
+          {/* Display the detailed error message */}
+          <p className="text-xs mt-1 max-w-full break-words">{error}</p>
         </div>
       )}
-      {/* The TalkingHead library will render the canvas inside this div */}
        {isSpeaking && ( // Visual indicator for speaking state
          <div className="absolute bottom-2 left-2 bg-green-500/80 text-white text-xs px-2 py-1 rounded-full animate-pulse backdrop-blur-sm">
            Speaking...
          </div>
        )}
-       {!isLoading && !error && !textToSpeak && (
+       {!isLoading && !error && !textToSpeak && !isSpeaking && ( // Show only when ready and idle
             <div className="absolute inset-0 flex items-center justify-center text-muted-foreground/50 text-sm">
                 Ready to speak
             </div>
         )}
+      {/* TalkingHead library renders canvas inside this div */}
     </div>
   );
 };
