@@ -21,7 +21,7 @@ export default function RootLayout({
       <head>
          {/* Add Import Map for Three.js and TalkingHead CDN */}
          {/* Ensure the talkinghead URL points to the correct .mjs file */}
-         <Script
+         {/* <Script
            id="import-map"
            strategy="beforeInteractive" // Load before other client-side scripts
            type="importmap"
@@ -36,7 +36,7 @@ export default function RootLayout({
             }
             `,
            }}
-        />
+        /> */}
         {/* Content Security Policy - Adjusted to allow CDN and API calls */}
         {/* Note: Adjust 'connect-src' if your Firebase Storage URL or other APIs change */}
          <meta

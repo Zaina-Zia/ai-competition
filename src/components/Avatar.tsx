@@ -1,5 +1,5 @@
 'use client';
-
+import Script from 'next/script';
 import React, { useEffect, useRef, useState } from 'react';
 import { Skeleton } from './ui/skeleton'; // Keep Skeleton for loading state
 import { AlertTriangle } from 'lucide-react'; // Keep AlertTriangle for error state
@@ -209,6 +209,23 @@ const Avatar: React.FC<AvatarProps> = ({
 
   // --- Render Logic ---
   return (
+        <>
+           <Script
+        id="importmap"
+        type="importmap"
+        dangerouslySetInnerHTML={{
+          __html: `
+          {
+            "imports": {
+              "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+              "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+              "talkinghead": "https://cdn.jsdelivr.net/gh/met4citizen/TalkingHead@1.4/modules/talkinghead.mjs"
+            }
+          }
+          `,
+        }}
+      />
+
     <div
       ref={avatarRef}
       className={cn(
@@ -243,6 +260,8 @@ const Avatar: React.FC<AvatarProps> = ({
       )}
       {/* The actual 3D avatar is rendered by TalkingHead into the div referenced by avatarRef */}
     </div>
+     </>
+
   );
 };
 
