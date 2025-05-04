@@ -8,20 +8,11 @@ import { storeArticle } from '@/services/firebase-storage';
 import type { StoredArticleData } from '@/services/firebase-storage';
 import pLimit from 'p-limit';
 import { URL } from 'url';
-import winston from 'winston'; // Assuming a logging library is used
+// import winston from 'winston'; // Assuming a logging library is used
 import puppeteer from 'puppeteer';
 
-// Logger setup (replace with your preferred logging solution or adjust levels)
-const logger = winston.createLogger({
-    level: 'info', // Adjust level as needed (e.g., 'debug' for more verbose output)
-    format: winston.format.combine(
-        winston.format.timestamp(),
-        winston.format.printf(({ timestamp, level, message, ...meta }) =>
-            `${timestamp} [${level}]: ${message} ${Object.keys(meta).length ? JSON.stringify(meta) : ''}`
-        )
-    ),
-    transports: [new winston.transports.Console()],
-  });
+// Removed winston logger setup - Use console.* instead
+// const logger = winston.createLogger({ ... });
 
 // --- Interfaces ---
 interface NewsArticle {
@@ -97,7 +88,7 @@ const resolveUrl = (baseUrl: string, relativeUrl: string | undefined): string =>
     // Only return valid http/https URLs
     return resolved.startsWith("http") ? resolved : "";
   } catch (error) {
-    logger.warn(`Error resolving URL: '${relativeUrl}' against base '${baseUrl}'`, { error: (error as Error).message });
+    console.warn(`Error resolving URL: '${relativeUrl}' against base '${baseUrl}'`, { error: (error as Error).message });
     return "";
   }
 };
@@ -155,7 +146,7 @@ const scoreElement = ($: cheerio.CheerioAPI, element: cheerio.Element, selector:
 
     return Math.max(0, score); // Ensure score is not negative
   } catch (error) {
-    logger.error("Error scoring element", { selector, error: (error as Error).message });
+    console.error("Error scoring element", { selector, error: (error as Error).message });
     return 0;
   }
 };
@@ -169,7 +160,7 @@ const scoreElement = ($: cheerio.CheerioAPI, element: cheerio.Element, selector:
 const fetchDynamicContent = async (url: string): Promise<string> => {
   let browser;
   try {
-    logger.info(`Fetching dynamic content for: ${url}`);
+    console.info(`Fetching dynamic content for: ${url}`);
     // Using 'new' headless mode is generally recommended
     browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox', '--disable-setuid-sandbox'] });
     const page = await browser.newPage();
@@ -178,15 +169,15 @@ const fetchDynamicContent = async (url: string): Promise<string> => {
     // Optional: Wait for a specific selector if needed, e.g., await page.waitForSelector('main article', { timeout: 10000 });
     const content = await page.content();
     await browser.close();
-    logger.info(`Successfully fetched dynamic content for: ${url}`);
+    console.info(`Successfully fetched dynamic content for: ${url}`);
     return content;
   } catch (error) {
-    logger.error(`Error fetching dynamic content for ${url}:`, { error: (error as Error).message });
+    console.error(`Error fetching dynamic content for ${url}:`, { error: (error as Error).message });
     if (browser) {
       try {
         await browser.close();
       } catch (closeError) {
-        logger.error(`Error closing browser after dynamic fetch error for ${url}:`, { error: (closeError as Error).message });
+        console.error(`Error closing browser after dynamic fetch error for ${url}:`, { error: (closeError as Error).message });
       }
     }
     return '';
@@ -389,15 +380,15 @@ async function performScraping(source: string, limit: number, concurrency: numbe
   let config: ScrapingConfig;
   if (scrapingConfig[source]) {
       config = scrapingConfig[source];
-      logger.info(`Using specific config for source: ${source}`);
+      console.info(`Using specific config for source: ${source}`);
   } else {
       try {
           // Attempt to use the source string as a URL for generic scraping
           new URL(source); // Validate if 'source' is a URL
           config = { ...genericConfig, url: source, sourceName: source };
-          logger.info(`Using generic config for URL: ${source}`);
+          console.info(`Using generic config for URL: ${source}`);
       } catch (_) {
-          logger.error(`Invalid source or URL provided: ${source}. Skipping.`);
+          console.error(`Invalid source or URL provided: ${source}. Skipping.`);
           return [];
       }
   }
@@ -408,7 +399,7 @@ async function performScraping(source: string, limit: number, concurrency: numbe
   const seenUrls = new Set<string>();
 
   try {
-    logger.info(`Starting scrape for ${config.sourceName} at ${config.url}...`);
+    console.info(`Starting scrape for ${config.sourceName} at ${config.url}...`);
 
     // Fetch page content (static or dynamic)
     let html = '';
@@ -431,7 +422,7 @@ async function performScraping(source: string, limit: number, concurrency: numbe
         validateStatus: (status) => status >= 200 && status < 400, // Allow redirects slightly more leniently
       });
         if (response.status >= 300 && response.status < 400 && response.headers.location) {
-             logger.warn(`Redirected from ${config.url} to ${response.headers.location}. Consider updating the config URL.`);
+             console.warn(`Redirected from ${config.url} to ${response.headers.location}. Consider updating the config URL.`);
              // Optionally, follow redirect here, but be cautious of loops
          } else if (response.status >= 400) {
             throw new Error(`HTTP error ${response.status} fetching ${config.url}`);
@@ -445,15 +436,15 @@ async function performScraping(source: string, limit: number, concurrency: numbe
     if (config.preprocess) {
       try {
         $ = config.preprocess(html, $); // Pass CheerioAPI instance
-        logger.debug(`Preprocessing applied for ${config.sourceName}`);
+        console.debug(`Preprocessing applied for ${config.sourceName}`);
       } catch (e) {
-        logger.error(`Error during preprocessing for ${config.sourceName}:`, e);
+        console.error(`Error during preprocessing for ${config.sourceName}:`, e);
       }
     }
 
     // --- Element Selection and Data Extraction ---
     const articleElements = $(config.selector.article.selectors.join(", "));
-    logger.info(`Found ${articleElements.length} potential article elements for ${config.sourceName}. Targeting limit: ${limit}.`);
+    console.info(`Found ${articleElements.length} potential article elements for ${config.sourceName}. Targeting limit: ${limit}.`);
 
      // Helper to select the best element based on scoring
       const selectBest = (
@@ -466,7 +457,7 @@ async function performScraping(source: string, limit: number, concurrency: numbe
 
           for (const selector of selectorConfig.selectors) {
               const elements = context.find(selector); // Find elements *within* the context
-                // logger.debug(`Selector '${selector}' found ${elements.length} elements for field '${field}'`);
+                // console.debug(`Selector '${selector}' found ${elements.length} elements for field '${field}'`);
 
               elements.each((_, el) => {
                    const $el = $(el);
@@ -505,11 +496,11 @@ async function performScraping(source: string, limit: number, concurrency: numbe
 
 
           if (selectorConfig.required && !bestMatchText) {
-              logger.warn(`Required field '${field}' not found for an article using selectors: ${selectorConfig.selectors.join(', ')}`);
+              console.warn(`Required field '${field}' not found for an article using selectors: ${selectorConfig.selectors.join(', ')}`);
               // Returning empty string, validation will happen later
           }
 
-           // logger.debug(`Best match for field '${field}': '${bestMatchText.substring(0, 50)}...' (Score: ${bestScore})`);
+           // console.debug(`Best match for field '${field}': '${bestMatchText.substring(0, 50)}...' (Score: ${bestScore})`);
           return bestMatchText;
       };
 
@@ -529,7 +520,7 @@ async function performScraping(source: string, limit: number, concurrency: numbe
               if (!article.url || !article.url.startsWith('http') || seenUrls.has(article.url)) {
                  if (relativeLink && !seenUrls.has(resolveUrl(config.url, relativeLink))) {
                       // Don't log skipped duplicates frequently, maybe only in debug mode
-                      // logger.debug(`Skipping article: Invalid or duplicate URL ('${article.url || relativeLink}')`);
+                      // console.debug(`Skipping article: Invalid or duplicate URL ('${article.url || relativeLink}')`);
                  }
                  continue; // Skip if URL is invalid, non-http, or already processed
               }
@@ -537,7 +528,7 @@ async function performScraping(source: string, limit: number, concurrency: numbe
               // 2. Extract Title (Required)
               article.title = selectBest($element, config.selector.title, 'title');
                if (!article.title) {
-                    logger.warn(`Skipping article: Missing required title. URL: ${article.url}`);
+                    console.warn(`Skipping article: Missing required title. URL: ${article.url}`);
                     continue; // Skip if required title is missing
                 }
 
@@ -550,7 +541,7 @@ async function performScraping(source: string, limit: number, concurrency: numbe
                 // Add common lazy-loading patterns if needed:
                 if (!article.imageUrl && rawImageUrl && rawImageUrl.includes('data:image')) {
                      // Handle base64 encoded images if necessary, maybe skip or log
-                     logger.debug(`Skipping base64 image for ${article.url}`);
+                     console.debug(`Skipping base64 image for ${article.url}`);
                      article.imageUrl = undefined; // Or set to placeholder
                  }
 
@@ -569,7 +560,7 @@ async function performScraping(source: string, limit: number, concurrency: numbe
                             // Respect rate limiting
                             if (config.rateLimitMs) await wait(config.rateLimitMs);
 
-                            logger.debug(`Fetching full content for: ${article.url}`);
+                            console.debug(`Fetching full content for: ${article.url}`);
                             let articleHtml = '';
                             if (config.useDynamicContent) { // Use dynamic fetching for full article if source uses it
                                 articleHtml = await fetchDynamicContent(article.url!);
@@ -590,7 +581,7 @@ async function performScraping(source: string, limit: number, concurrency: numbe
                                 try {
                                     processedArticle$ = config.preprocess(articleHtml, article$);
                                 } catch (e) {
-                                    logger.error(`Error preprocessing full article page ${article.url}:`, e);
+                                    console.error(`Error preprocessing full article page ${article.url}:`, e);
                                 }
                             }
 
@@ -605,12 +596,12 @@ async function performScraping(source: string, limit: number, concurrency: numbe
                                 // Limit length to avoid excessively large data
                                 article.content = cleanContent(fullContentText).slice(0, 5000);
                                 fetchedFullContent = true;
-                                logger.debug(`Successfully fetched and updated full content for: ${article.url}`);
+                                console.debug(`Successfully fetched and updated full content for: ${article.url}`);
                             } else {
-                                logger.debug(`Full content fetch for ${article.url} did not yield better content.`);
+                                console.debug(`Full content fetch for ${article.url} did not yield better content.`);
                             }
                         } catch (error) {
-                            logger.warn(`Failed to fetch or process full content for ${article.url}:`, { error: (error as Error).message });
+                            console.warn(`Failed to fetch or process full content for ${article.url}:`, { error: (error as Error).message });
                         }
                     });
                }
@@ -618,7 +609,7 @@ async function performScraping(source: string, limit: number, concurrency: numbe
 
                 // 7. Final Validation and Postprocessing
                  if (!article.content || article.content.length < 50) { // Stricter content check after potential full fetch
-                    logger.warn(`Skipping article: Content too short or missing after fetch attempt. URL: ${article.url}`);
+                    console.warn(`Skipping article: Content too short or missing after fetch attempt. URL: ${article.url}`);
                     continue;
                  }
 
@@ -627,18 +618,18 @@ async function performScraping(source: string, limit: number, concurrency: numbe
                     try {
                         finalArticle = config.postprocess(finalArticle);
                     } catch (e) {
-                        logger.error(`Error during postprocessing for ${finalArticle.url}:`, e);
+                        console.error(`Error during postprocessing for ${finalArticle.url}:`, e);
                     }
                 }
 
               // 8. Add to list and mark URL as seen
               articles.push(finalArticle);
               seenUrls.add(finalArticle.url);
-              logger.info(`Successfully scraped article: "${finalArticle.title.substring(0, 50)}..." from ${finalArticle.source}`);
+              console.info(`Successfully scraped article: "${finalArticle.title.substring(0, 50)}..." from ${finalArticle.source}`);
 
 
          } catch (error) {
-           logger.error(`Error processing a potential article element from ${config.sourceName}:`, { error: (error as Error).message, elementHtml: $(element).html()?.substring(0, 100) });
+           console.error(`Error processing a potential article element from ${config.sourceName}:`, { error: (error as Error).message, elementHtml: $(element).html()?.substring(0, 100) });
          }
 
          // Optional small delay between processing elements on the main page
@@ -646,11 +637,11 @@ async function performScraping(source: string, limit: number, concurrency: numbe
 
     } // End of article element loop
 
-    logger.info(`Finished scraping ${config.sourceName}. Found ${articles.length} valid articles.`);
+    console.info(`Finished scraping ${config.sourceName}. Found ${articles.length} valid articles.`);
     return articles; // Return collected articles (limit already applied)
 
   } catch (error) {
-    logger.error(`Major error scraping ${config.sourceName} (${config.url}):`, { error: (error as Error).message, stack: (error as Error).stack });
+    console.error(`Major error scraping ${config.sourceName} (${config.url}):`, { error: (error as Error).message, stack: (error as Error).stack });
     return []; // Return empty array on significant failure
   }
 }
@@ -675,7 +666,7 @@ export async function scrapeAndStoreArticles(
   const allErrors: { source: string; message: string, url?: string }[] = [];
   const overallLimit = pLimit(concurrency); // Controls concurrent source scraping AND article processing
 
-  logger.info(`--- Starting scrapeAndStoreArticles --- Sources: [${sources.join(', ')}], Limit per source: ${limit}, Concurrency: ${concurrency}`);
+  console.info(`--- Starting scrapeAndStoreArticles --- Sources: [${sources.join(', ')}], Limit per source: ${limit}, Concurrency: ${concurrency}`);
 
   const scrapingPromises = sources.map((source) =>
     overallLimit(async () => {
@@ -686,7 +677,7 @@ export async function scrapeAndStoreArticles(
           const subConcurrency = Math.max(1, Math.floor(concurrency / sources.length));
           const articles = await performScraping(source, limit, subConcurrency);
           totalArticlesScraped += articles.length;
-          logger.info(`Source ${source}: Scraped ${articles.length} articles in ${Date.now() - sourceStartTime}ms.`);
+          console.info(`Source ${source}: Scraped ${articles.length} articles in ${Date.now() - sourceStartTime}ms.`);
 
 
           // Process each scraped article (summarize and store)
@@ -695,9 +686,9 @@ export async function scrapeAndStoreArticles(
               const articleProcessStart = Date.now();
               try {
                 // 1. Generate summary using Genkit flow
-                logger.debug(`Summarizing article: ${article.url}`);
+                console.debug(`Summarizing article: ${article.url}`);
                 const { script } = await summarizeArticle({ content: article.content });
-                logger.debug(`Summarized article: ${article.url} in ${Date.now() - articleProcessStart}ms`);
+                console.debug(`Summarized article: ${article.url} in ${Date.now() - articleProcessStart}ms`);
 
                 // 2. Prepare data for storage
                 // Encode URL to create a safe filename/ID
@@ -709,26 +700,26 @@ export async function scrapeAndStoreArticles(
                 };
 
                 // 3. Store article data in Firebase Storage
-                logger.debug(`Storing article: ${articleId} (URL: ${article.url})`);
+                console.debug(`Storing article: ${articleId} (URL: ${article.url})`);
                 await storeArticle(articleId, dataToStore);
                 processedCount++;
-                logger.info(`Successfully processed and stored article: ${article.url} in ${Date.now() - articleProcessStart}ms`);
+                console.info(`Successfully processed and stored article: ${article.url} in ${Date.now() - articleProcessStart}ms`);
 
               } catch (error) {
                 const errorMsg = `Error processing article "${article.title}" (${article.url}): ${(error as Error).message}`;
-                logger.error(errorMsg, { stack: (error as Error).stack });
+                console.error(errorMsg, { stack: (error as Error).stack });
                 allErrors.push({ source: article.source, message: errorMsg, url: article.url });
               }
             })
           ); // End map for processingPromises
 
           await Promise.all(processingPromises);
-          logger.info(`Source ${source}: Finished processing ${articles.length} scraped articles.`);
+          console.info(`Source ${source}: Finished processing ${articles.length} scraped articles.`);
 
       } catch (error) {
         // Catch errors from performScraping itself
         const errorMsg = `Error during scraping phase for source ${source}: ${(error as Error).message}`;
-        logger.error(errorMsg, { stack: (error as Error).stack });
+        console.error(errorMsg, { stack: (error as Error).stack });
         allErrors.push({ source: source, message: errorMsg });
       }
     }) // End overallLimit wrapper for source
@@ -742,9 +733,9 @@ export async function scrapeAndStoreArticles(
   // Use totalArticlesScraped as the denominator for a more realistic success rate of processing *scraped* articles
   const successRate = totalArticlesScraped > 0 ? processedCount / totalArticlesScraped : (sources.length > 0 ? 0 : 1); // Avoid division by zero
 
-  logger.info(`--- Finished scrapeAndStoreArticles --- Duration: ${durationMs}ms, Processed: ${processedCount}, Scraped: ${totalArticlesScraped}, Errors: ${allErrors.length}`);
+  console.info(`--- Finished scrapeAndStoreArticles --- Duration: ${durationMs}ms, Processed: ${processedCount}, Scraped: ${totalArticlesScraped}, Errors: ${allErrors.length}`);
    if (allErrors.length > 0) {
-       logger.warn("Errors occurred during scraping/processing:", allErrors);
+       console.warn("Errors occurred during scraping/processing:", allErrors);
    }
 
 

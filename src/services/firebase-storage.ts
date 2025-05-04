@@ -2,20 +2,7 @@
 import { storage } from './firebase-config';
 import { ref, uploadString, getDownloadURL, deleteObject, listAll, StorageReference } from 'firebase/storage';
 import type { NewsArticle } from './news-scraper.interface'; // Use updated interface
-import winston from 'winston'; // Assuming logger is available or set up similarly
-
-// Logger setup (ensure consistent logging)
-const logger = winston.createLogger({
-    level: 'info',
-    format: winston.format.combine(
-        winston.format.timestamp(),
-        winston.format.printf(({ timestamp, level, message, ...meta }) =>
-            `${timestamp} [${level}]: ${message} ${Object.keys(meta).length ? JSON.stringify(meta) : ''}`
-        )
-    ),
-    transports: [new winston.transports.Console()],
-});
-
+// Removed winston import
 
 /*
  * =============================================================================
@@ -122,9 +109,9 @@ export async function storeArticle(articleId: string, data: StoredArticleData): 
         await uploadString(storageRef, dataString, 'raw', {
             contentType: 'application/json'
         });
-        logger.info(`Article ${articleId} (URL: ${data.url}) stored successfully.`);
+        console.info(`Article ${articleId} (URL: ${data.url}) stored successfully.`);
     } catch (error) {
-        logger.error(`Error storing article ${articleId} (URL: ${data.url}):`, error);
+        console.error(`Error storing article ${articleId} (URL: ${data.url}):`, error);
         throw new Error(`Failed to store article data: ${(error as Error).message}`);
     }
 }
@@ -142,14 +129,14 @@ export async function getArticle(articleId: string): Promise<StoredArticleData> 
          // Get the download URL. This requires public access or authentication.
          // Note: Includes `alt=media` for direct download, which is often needed for fetch.
          url = await getDownloadURL(storageRef);
-         logger.debug(`Download URL obtained for ${articleId}: ${url}`);
+         console.debug(`Download URL obtained for ${articleId}: ${url}`);
     } catch (error: any) {
          // Catch storage/object-not-found specifically from getDownloadURL
          if (error.code === 'storage/object-not-found') {
-             logger.warn(`Article JSON file for ID ${articleId} not found in storage.`);
+             console.warn(`Article JSON file for ID ${articleId} not found in storage.`);
              throw new Error(`Article not found.`); // Re-throw specific error
          }
-         logger.error(`Error getting download URL for article ID ${articleId}:`, error);
+         console.error(`Error getting download URL for article ID ${articleId}:`, error);
          throw new Error(`Failed to get download URL: ${error.message || 'Unknown error'}`);
     }
 
@@ -158,31 +145,31 @@ export async function getArticle(articleId: string): Promise<StoredArticleData> 
         // *** CORS ERROR LIKELY HAPPENS HERE ***
         // If fetch fails with "TypeError: Failed to fetch" or a CORS error,
         // check the CORS configuration on your Firebase Storage bucket. See comment block above.
-        logger.debug(`Fetching article content from URL: ${url}`);
+        console.debug(`Fetching article content from URL: ${url}`);
         const response = await fetch(url); // Default mode is 'cors'
 
         if (!response.ok) {
             // Throw specific error for easier handling upstream
              if (response.status === 404) {
-                 logger.warn(`Article ${articleId} JSON file not found at URL: ${url}`);
+                 console.warn(`Article ${articleId} JSON file not found at URL: ${url}`);
                  throw new Error(`Article not found.`);
              }
             // Log the URL that failed
-            logger.error(`HTTP error fetching article JSON! Status: ${response.status} for URL: ${url}`);
+            console.error(`HTTP error fetching article JSON! Status: ${response.status} for URL: ${url}`);
             throw new Error(`HTTP error fetching article JSON! status: ${response.status}`);
         }
         const data: StoredArticleData = await response.json();
-        logger.info(`Article ${articleId} retrieved successfully.`);
+        console.info(`Article ${articleId} retrieved successfully.`);
         // Basic validation of expected fields
         if (!data.title || !data.url || !data.source || !data.content) {
-             logger.warn(`Retrieved data for article ID ${articleId} is missing required fields.`);
+             console.warn(`Retrieved data for article ID ${articleId} is missing required fields.`);
              // Depending on strictness, you might throw an error here
         }
 
         return data;
     } catch (error: any) {
         // Catch potential fetch errors (NetworkError, CORS issues, JSON parsing errors)
-        logger.error(`Error fetching article content for ${articleId} from ${url}:`, error);
+        console.error(`Error fetching article content for ${articleId} from ${url}:`, error);
 
         // Provide a more user-friendly error message, hinting at CORS
         let errorMessage = `Failed to fetch article data for ${articleId}. This might be a network issue or a CORS configuration problem on the storage bucket. Check browser console and CORS settings.`;
@@ -206,12 +193,12 @@ export async function getArticle(articleId: string): Promise<StoredArticleData> 
  */
 export async function getAllStoredArticles(): Promise<StoredArticleData[]> {
     const listRef = ref(storage, ARTICLES_FOLDER);
-    logger.info(`Listing articles from storage path: ${listRef.fullPath}`);
+    console.info(`Listing articles from storage path: ${listRef.fullPath}`);
 
     try {
         const res = await listAll(listRef);
         const jsonFiles = res.items.filter(itemRef => itemRef.name.endsWith('.json'));
-        logger.info(`Found ${jsonFiles.length} JSON files in the articles folder.`);
+        console.info(`Found ${jsonFiles.length} JSON files in the articles folder.`);
 
         if (jsonFiles.length === 0) {
             return []; // No articles found
@@ -226,7 +213,7 @@ export async function getAllStoredArticles(): Promise<StoredArticleData[]> {
                 return await getArticle(articleId);
             } catch (error) {
                 // Log specific errors for each article that fails
-                logger.error(`Failed to get/process article with ID ${articleId} (${itemRef.name}):`, error);
+                console.error(`Failed to get/process article with ID ${articleId} (${itemRef.name}):`, error);
                 // Return null to indicate failure for this specific article
                 // This prevents one failed article from crashing the entire list load.
                 return null;
@@ -239,14 +226,14 @@ export async function getAllStoredArticles(): Promise<StoredArticleData[]> {
         const successfulArticles = results.filter((article): article is StoredArticleData => article !== null);
         const failedCount = results.length - successfulArticles.length;
         if (failedCount > 0) {
-             logger.warn(`Failed to fetch content for ${failedCount} out of ${results.length} articles. Check previous logs and CORS configuration.`);
+             console.warn(`Failed to fetch content for ${failedCount} out of ${results.length} articles. Check previous logs and CORS configuration.`);
         }
-         logger.info(`Successfully processed and retrieved ${successfulArticles.length} articles.`);
+         console.info(`Successfully processed and retrieved ${successfulArticles.length} articles.`);
         return successfulArticles;
 
     } catch (error) {
         // This error would likely be from listAll itself (e.g., permissions error)
-        logger.error("Error listing articles in storage:", error);
+        console.error("Error listing articles in storage:", error);
         throw new Error(`Failed to list articles: ${(error as Error).message}`);
     }
 }
@@ -262,13 +249,13 @@ export async function deleteArticle(articleId: string): Promise<void> {
     const storageRef = ref(storage, `${ARTICLES_FOLDER}/${articleId}.json`);
     try {
         await deleteObject(storageRef);
-        logger.info(`Article ${articleId} deleted successfully.`);
+        console.info(`Article ${articleId} deleted successfully.`);
     } catch (error: any) {
          if (error.code === 'storage/object-not-found') {
-             logger.warn(`Attempted to delete non-existent article ${articleId}.`);
+             console.warn(`Attempted to delete non-existent article ${articleId}.`);
              return; // Don't throw an error if it's already gone
          }
-        logger.error(`Error deleting article ${articleId}:`, error);
+        console.error(`Error deleting article ${articleId}:`, error);
         throw new Error(`Failed to delete article data: ${error.message}`);
     }
 }
