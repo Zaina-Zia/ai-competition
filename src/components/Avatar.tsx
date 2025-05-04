@@ -2,10 +2,16 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-// Removed direct import { TalkingHead } from 'talkinghead'; - relying on global from import map
-import type { TalkingHead as TalkingHeadType } from '@/types/talkinghead'; // Use types defined in talkinghead.d.ts
+// Explicitly declare window to avoid TypeScript errors
+declare global {
+    interface Window {
+        TalkingHead?: any; // Use 'any' or a more specific type if available
+    }
+}
+
 import { Skeleton } from './ui/skeleton';
 import { AlertTriangle } from 'lucide-react';
+import { cn } from '@/lib/utils'; // Import the cn utility
 
 interface AvatarProps {
   textToSpeak: string | null; // Text to be spoken, null initially or when not speaking
@@ -23,13 +29,13 @@ const Avatar: React.FC<AvatarProps> = ({
   onError,
 }) => {
   const avatarRef = useRef<HTMLDivElement>(null);
-  const headRef = useRef<TalkingHeadType | null>(null);
+  const headRef = useRef<any | null>(null); // Use 'any' for TalkingHead instance for now
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Ref for retry timeout
 
-  const initializeAvatar = (TalkingHeadClass: typeof TalkingHeadType) => {
+  const initializeAvatar = (TalkingHeadClass: any) => {
       if (!avatarRef.current || headRef.current) return; // Already initialized or no ref
 
       console.log("Initializing TalkingHead...");
@@ -40,7 +46,7 @@ const Avatar: React.FC<AvatarProps> = ({
         const headInstance = new TalkingHeadClass(avatarRef.current, {
           ttsEndpoint: '/api/tts', // Use the Next.js API route proxy
           lipsyncModules: ['en'],
-          onerror: (err) => {
+          onerror: (err: Error) => { // Add type annotation for err
             console.error('TalkingHead Error:', err);
             const errMsg = `TalkingHead runtime error: ${err.message}`;
             setError(errMsg);
@@ -89,23 +95,32 @@ const Avatar: React.FC<AvatarProps> = ({
     let retries = 0;
 
     const checkAndInit = () => {
-        if (typeof window !== 'undefined' && window.TalkingHead) {
-            console.log("window.TalkingHead found, initializing...");
-            if (isMounted) {
-                initializeAvatar(window.TalkingHead);
+        // Check if running in a browser environment first
+        if (typeof window !== 'undefined') {
+            if (window.TalkingHead) {
+                console.log("window.TalkingHead found, initializing...");
+                if (isMounted) {
+                    initializeAvatar(window.TalkingHead);
+                }
+            } else {
+                retries++;
+                if (retries <= maxRetries && isMounted) {
+                    console.log(`TalkingHead not found on window, retrying (${retries}/${maxRetries})...`);
+                    retryTimeoutRef.current = setTimeout(checkAndInit, 500); // Wait 500ms and retry
+                } else if (isMounted) {
+                    const errMsg = `TalkingHead not available on window object after ${maxRetries} retries. Check the import map script in layout.tsx.`;
+                    console.error(errMsg);
+                    setError(errMsg);
+                    onError?.(errMsg);
+                    setIsLoading(false);
+                }
             }
         } else {
-            retries++;
-            if (retries <= maxRetries && isMounted) {
-                console.log(`TalkingHead not found on window, retrying (${retries}/${maxRetries})...`);
-                retryTimeoutRef.current = setTimeout(checkAndInit, 500); // Wait 500ms and retry
-            } else if (isMounted) {
-                const errMsg = `TalkingHead not available on window object after ${maxRetries} retries. Check the import map script in layout.tsx.`;
-                console.error(errMsg);
-                setError(errMsg);
-                onError?.(errMsg);
-                setIsLoading(false);
-            }
+            // Not in a browser environment, cannot initialize
+            console.warn("Not in a browser environment, skipping TalkingHead initialization.");
+             if (isMounted) {
+                setIsLoading(false); // Ensure loading state is cleared if not in browser
+             }
         }
     };
 
@@ -133,33 +148,38 @@ const Avatar: React.FC<AvatarProps> = ({
 
   // Effect to handle speaking when textToSpeak changes
   useEffect(() => {
-    if (headRef.current && textToSpeak && !isSpeaking && !isLoading && !error) {
+    // Ensure we are in a browser environment before trying to speak
+     if (typeof window === 'undefined' || !headRef.current || isLoading || error) {
+       return; // Don't attempt to speak if not ready or not in browser
+     }
+
+    if (textToSpeak && !isSpeaking) {
       console.log('Attempting to speak:', textToSpeak.substring(0, 50) + '...');
       setIsSpeaking(true);
       headRef.current.speakText(textToSpeak)
         .then(() => {
           console.log('Finished speaking.');
-          if (typeof window !== 'undefined') { // Check if running in browser
-             setIsSpeaking(false);
-          }
+           if (isSpeaking) { // Check if still supposed to be speaking before setting state
+              setIsSpeaking(false);
+           }
         })
         .catch((speakError: any) => {
           console.error('Failed to speak text:', speakError);
           const errMsg = `Speaking error: ${speakError.message || 'Unknown error'}`;
-           if (typeof window !== 'undefined') { // Check if running in browser
-             setError(errMsg);
-             onError?.(errMsg);
-             setIsSpeaking(false);
+          // Only update state if component is still mounted and supposed to be speaking
+           if (isSpeaking) {
+              setError(errMsg);
+              onError?.(errMsg);
+              setIsSpeaking(false);
            }
         });
     } else if (!textToSpeak && isSpeaking) {
        // Optionally handle stopping speech if text becomes null while speaking
        // headRef.current?.stopSpeaking(); // Requires stopSpeaking method in TalkingHead
-       if (typeof window !== 'undefined') { // Check if running in browser
-          setIsSpeaking(false); // Assume stopped if text is cleared
-       }
+        setIsSpeaking(false); // Assume stopped if text is cleared
     }
-  }, [textToSpeak, isLoading, error, isSpeaking, onError]); // Added dependencies
+    // Added isSpeaking to dependencies to re-evaluate if it changes externally (less likely but safer)
+  }, [textToSpeak, isLoading, error, isSpeaking, onError]);
 
 
   return (
