@@ -1,6 +1,21 @@
+
 import { storage } from './firebase-config';
 import { ref, uploadString, getDownloadURL, deleteObject, listAll, StorageReference } from 'firebase/storage';
-import type { NewsArticle } from './news-scraper.interface'; // Renamed interface file
+import type { NewsArticle } from './news-scraper.interface'; // Use updated interface
+import winston from 'winston'; // Assuming logger is available or set up similarly
+
+// Logger setup (ensure consistent logging)
+const logger = winston.createLogger({
+    level: 'info',
+    format: winston.format.combine(
+        winston.format.timestamp(),
+        winston.format.printf(({ timestamp, level, message, ...meta }) =>
+            `${timestamp} [${level}]: ${message} ${Object.keys(meta).length ? JSON.stringify(meta) : ''}`
+        )
+    ),
+    transports: [new winston.transports.Console()],
+});
+
 
 /*
  * =============================================================================
@@ -13,8 +28,9 @@ import type { NewsArticle } from './news-scraper.interface'; // Renamed interfac
  * Firebase Storage bucket (which is a Google Cloud Storage bucket).
  *
  * Browsers enforce the Same-Origin Policy, preventing web pages from making
- * requests to a different domain (like `firebasestorage.googleapis.com`) unless
- * that domain explicitly allows it via CORS headers.
+ * requests to a different domain (like `firebasestorage.googleapis.com` or your
+ * project-specific storage domain) unless that domain explicitly allows it via
+ * CORS headers.
  *
  * You MUST configure your bucket to allow GET requests from your web app's origin(s).
  *
@@ -24,14 +40,19 @@ import type { NewsArticle } from './news-scraper.interface'; // Renamed interfac
  *    Follow the instructions: https://cloud.google.com/storage/docs/gsutil_install
  *
  * 2. Create a CORS configuration file (e.g., `cors-config.json`):
- *    Replace `http://localhost:9002` with your actual local development port if different.
- *    Replace `https://your-production-app-domain.com` with your deployed application's URL.
+ *    Replace `http://localhost:9000` / `https://*.cloudworkstations.dev` with your actual origins.
  *    You can add multiple origins to the array.
+ *    Using wildcards like `*.cloudworkstations.dev` is possible but be mindful of security implications.
  *
  *    ```json
  *    [
  *      {
- *        "origin": ["http://localhost:9002", "https://your-production-app-domain.com"],
+ *        "origin": [
+ *           "http://localhost:9000",
+ *           "https://9000-idx-studio-1746337412493.cluster-w5vd22whf5gmav2vgkomwtc4go.cloudworkstations.dev", // Replace with your specific dev URL
+ *           "https://*.cloudworkstations.dev", // Wider match for dev environments
+ *           "https://your-production-app-domain.com" // Add production domain here
+ *         ],
  *        "method": ["GET"],
  *        "responseHeader": ["Content-Type", "Access-Control-Allow-Origin"],
  *        "maxAgeSeconds": 3600
@@ -40,31 +61,32 @@ import type { NewsArticle } from './news-scraper.interface'; // Renamed interfac
  *    ```
  *
  * 3. Apply the configuration to your bucket:
- *    Replace `<YOUR_STORAGE_BUCKET_NAME>` with your actual bucket name (from your .env file, e.g., `your-project-id.appspot.com`).
+ *    Replace `<YOUR_STORAGE_BUCKET_URL>` with your actual bucket URL (e.g., `gs://newscast-now.appspot.com`).
  *
  *    ```bash
- *    gsutil cors set cors-config.json gs://<YOUR_STORAGE_BUCKET_NAME>
+ *    gsutil cors set cors-config.json gs://newscast-now.appspot.com
  *    ```
  *
  * 4. Verify the configuration:
  *    ```bash
- *    gsutil cors get gs://<YOUR_STORAGE_BUCKET_NAME>
+ *    gsutil cors get gs://newscast-now.appspot.com
  *    ```
  *
  * Alternative: Using Google Cloud Console (Less Recommended for complex configs):
  *    a. Go to Cloud Storage -> Buckets in the Google Cloud Console.
- *    b. Select your project's bucket.
- *    c. Go to the "Permissions" tab, then "Edit access".
- *    d. Find the CORS section (you might need to click "Add entry" or similar).
- *    e. Add your origin(s) (e.g., `http://localhost:9002`).
+ *    b. Select your project's bucket (`newscast-now.appspot.com`).
+ *    c. Go to the "Permissions" tab.
+ *    d. Click "Edit access" or find the CORS configuration section.
+ *    e. Add your origin(s) (e.g., `http://localhost:9000`, your cloud workstation URL).
  *    f. Select the `GET` method.
- *    g. Set `maxAgeSeconds` (e.g., 3600).
- *    h. Save the configuration.
+ *    g. Set `responseHeader` to include `Content-Type` and `Access-Control-Allow-Origin`.
+ *    h. Set `maxAgeSeconds` (e.g., 3600).
+ *    i. Save the configuration.
  *
  * IMPORTANT NOTES:
- *  - It might take a few minutes for CORS changes to propagate. Clear your browser cache if issues persist after configuration.
+ *  - It might take a few minutes for CORS changes to propagate. Clear your browser cache and restart your dev server if issues persist after configuration.
  *  - Ensure the `origin` in your `cors-config.json` EXACTLY matches the origin shown in the browser's address bar (including `http` or `https` and the port number for local development).
- *  - The error "Response to preflight request doesn't pass access control check: It does not have HTTP ok status" also indicates a CORS problem. The `fetch` might be preceded by an `OPTIONS` request (preflight) which also needs to be allowed by the CORS policy if headers other than simple ones are involved, though for simple GET requests, the configuration above should suffice.
+ *  - The error "Response to preflight request doesn't pass access control check: It does not have HTTP ok status" also indicates a CORS problem. The `fetch` might be preceded by an `OPTIONS` request (preflight) which also needs to be allowed by the CORS policy if headers other than simple ones are involved. Adding `"method": ["GET", "OPTIONS"]` might be necessary in some cases, but usually just `GET` is sufficient for fetching files.
  *
  * For more details, see:
  * https://firebase.google.com/docs/storage/web/download-files#cors_configuration
@@ -73,29 +95,36 @@ import type { NewsArticle } from './news-scraper.interface'; // Renamed interfac
  */
 
 
+// Represents the data structure as stored in Firebase Storage.
+// It extends the base NewsArticle with the AI-generated script.
 export interface StoredArticleData extends NewsArticle {
-    generatedScript?: string; // Add the generated script
+    generatedScript?: string;
+    // Add any other metadata specific to storage if needed
+    storedAt?: string; // Example: ISO timestamp of when it was stored
 }
 
 const ARTICLES_FOLDER = 'articles';
 
 /**
  * Stores the article data (including the generated script) as a JSON file in Firebase Storage.
+ * Uses base64url encoding of the URL for a safe and unique filename.
  *
- * @param articleId A unique identifier for the article (e.g., encoded URL or UUID).
+ * @param articleId The **base64url encoded** unique identifier derived from the article URL.
  * @param data The article data including the generated script.
  * @returns A promise that resolves when the upload is complete.
  */
 export async function storeArticle(articleId: string, data: StoredArticleData): Promise<void> {
+    // Add a timestamp to the stored data
+    const dataWithTimestamp = { ...data, storedAt: new Date().toISOString() };
     const storageRef = ref(storage, `${ARTICLES_FOLDER}/${articleId}.json`);
-    const dataString = JSON.stringify(data);
+    const dataString = JSON.stringify(dataWithTimestamp); // Store the enriched data
     try {
         await uploadString(storageRef, dataString, 'raw', {
             contentType: 'application/json'
         });
-        console.log(`Article ${articleId} stored successfully.`);
+        logger.info(`Article ${articleId} (URL: ${data.url}) stored successfully.`);
     } catch (error) {
-        console.error(`Error storing article ${articleId}:`, error);
+        logger.error(`Error storing article ${articleId} (URL: ${data.url}):`, error);
         throw new Error(`Failed to store article data: ${(error as Error).message}`);
     }
 }
@@ -103,21 +132,24 @@ export async function storeArticle(articleId: string, data: StoredArticleData): 
 /**
  * Retrieves the article data (including the generated script) from Firebase Storage.
  *
- * @param articleId The unique identifier for the article.
+ * @param articleId The **base64url encoded** unique identifier for the article.
  * @returns A promise that resolves to the StoredArticleData.
  */
 export async function getArticle(articleId: string): Promise<StoredArticleData> {
     const storageRef = ref(storage, `${ARTICLES_FOLDER}/${articleId}.json`);
     let url: string;
     try {
+         // Get the download URL. This requires public access or authentication.
+         // Note: Includes `alt=media` for direct download, which is often needed for fetch.
          url = await getDownloadURL(storageRef);
+         logger.debug(`Download URL obtained for ${articleId}: ${url}`);
     } catch (error: any) {
          // Catch storage/object-not-found specifically from getDownloadURL
          if (error.code === 'storage/object-not-found') {
-             console.warn(`Article ${articleId} not found directly in storage.`);
+             logger.warn(`Article JSON file for ID ${articleId} not found in storage.`);
              throw new Error(`Article not found.`); // Re-throw specific error
          }
-         console.error(`Error getting download URL for article ${articleId}:`, error);
+         logger.error(`Error getting download URL for article ID ${articleId}:`, error);
          throw new Error(`Failed to get download URL: ${error.message || 'Unknown error'}`);
     }
 
@@ -126,63 +158,80 @@ export async function getArticle(articleId: string): Promise<StoredArticleData> 
         // *** CORS ERROR LIKELY HAPPENS HERE ***
         // If fetch fails with "TypeError: Failed to fetch" or a CORS error,
         // check the CORS configuration on your Firebase Storage bucket. See comment block above.
-        const response = await fetch(url);
+        logger.debug(`Fetching article content from URL: ${url}`);
+        const response = await fetch(url); // Default mode is 'cors'
 
         if (!response.ok) {
             // Throw specific error for easier handling upstream
              if (response.status === 404) {
-                 console.warn(`Article ${articleId} JSON file not found at URL: ${url}`);
+                 logger.warn(`Article ${articleId} JSON file not found at URL: ${url}`);
                  throw new Error(`Article not found.`);
              }
             // Log the URL that failed
-            console.error(`HTTP error fetching article JSON! Status: ${response.status} for URL: ${url}`);
+            logger.error(`HTTP error fetching article JSON! Status: ${response.status} for URL: ${url}`);
             throw new Error(`HTTP error fetching article JSON! status: ${response.status}`);
         }
         const data: StoredArticleData = await response.json();
-        console.log(`Article ${articleId} retrieved successfully.`);
+        logger.info(`Article ${articleId} retrieved successfully.`);
+        // Basic validation of expected fields
+        if (!data.title || !data.url || !data.source || !data.content) {
+             logger.warn(`Retrieved data for article ID ${articleId} is missing required fields.`);
+             // Depending on strictness, you might throw an error here
+        }
+
         return data;
     } catch (error: any) {
-        // Catch potential fetch errors (NetworkError, CORS issues)
-        console.error(`Error fetching article content for ${articleId} from ${url}:`, error);
+        // Catch potential fetch errors (NetworkError, CORS issues, JSON parsing errors)
+        logger.error(`Error fetching article content for ${articleId} from ${url}:`, error);
+
         // Provide a more user-friendly error message, hinting at CORS
-        throw new Error(`Failed to fetch article data for ${articleId}. This might be a network issue or a CORS configuration problem on the storage bucket. Check browser console and CORS settings. Original error: ${error.message || 'Unknown fetch error'}`);
+        let errorMessage = `Failed to fetch article data for ${articleId}. This might be a network issue or a CORS configuration problem on the storage bucket. Check browser console and CORS settings.`;
+         if (error instanceof TypeError && error.message === 'Failed to fetch') {
+            errorMessage += ' The error suggests a possible CORS issue. Verify that the origin of your application is in the allowed origins in the Firebase Storage CORS configuration.';
+         } else if (error instanceof SyntaxError) {
+             // JSON parsing error
+             errorMessage += ' The retrieved file is not valid JSON.';
+         }
+         errorMessage += ` Original error: ${error.message || 'Unknown fetch error'}`;
+        throw new Error(errorMessage);
     }
 }
 
 /**
  * Retrieves all article data stored in the articles folder.
- * Note: This can be inefficient for very large numbers of articles.
- * Consider using Firestore or another database for querying metadata if scale is large.
- * This function should ideally be called from a server-side context (like a Server Action)
- * due to potential performance implications and broader permissions needed for listing.
+ * Fetches download URLs first, then fetches content concurrently.
+ * Handles individual fetch errors gracefully.
  *
  * @returns A promise that resolves to an array of StoredArticleData.
  */
 export async function getAllStoredArticles(): Promise<StoredArticleData[]> {
     const listRef = ref(storage, ARTICLES_FOLDER);
-    console.log("Listing articles from:", listRef.fullPath); // Log which folder is being listed
+    logger.info(`Listing articles from storage path: ${listRef.fullPath}`);
 
     try {
         const res = await listAll(listRef);
-        console.log(`Found ${res.items.length} items in the articles folder.`); // Log how many items were found
+        const jsonFiles = res.items.filter(itemRef => itemRef.name.endsWith('.json'));
+        logger.info(`Found ${jsonFiles.length} JSON files in the articles folder.`);
 
-        const fetchPromises = res.items
-            .filter(itemRef => itemRef.name.endsWith('.json')) // Ensure we only process JSON files
-            .map(async (itemRef: StorageReference) => {
-                try {
-                    // Extract articleId from the file name (remove .json extension)
-                    const articleId = itemRef.name.replace(/\.json$/, '');
-                    // IMPORTANT: This calls getArticle, which performs a fetch.
-                    // If CORS is not configured, this fetch will likely fail.
-                    return await getArticle(articleId);
-                } catch (error) {
-                    // Log specific errors for each article that fails
-                    console.error(`Error fetching article content for ${itemRef.name}:`, error);
-                    // Return null or some indicator that this specific article failed
-                    // This prevents one failed article from crashing the entire list load.
-                    return null;
-                }
-            });
+        if (jsonFiles.length === 0) {
+            return []; // No articles found
+        }
+
+        const fetchPromises = jsonFiles.map(async (itemRef: StorageReference) => {
+            // Extract articleId from the file name (remove .json extension)
+            const articleId = itemRef.name.replace(/\.json$/, '');
+            try {
+                // IMPORTANT: This calls getArticle, which performs a fetch.
+                // If CORS is not configured, this fetch will likely fail.
+                return await getArticle(articleId);
+            } catch (error) {
+                // Log specific errors for each article that fails
+                logger.error(`Failed to get/process article with ID ${articleId} (${itemRef.name}):`, error);
+                // Return null to indicate failure for this specific article
+                // This prevents one failed article from crashing the entire list load.
+                return null;
+            }
+        });
 
         const results = await Promise.all(fetchPromises);
 
@@ -190,14 +239,14 @@ export async function getAllStoredArticles(): Promise<StoredArticleData[]> {
         const successfulArticles = results.filter((article): article is StoredArticleData => article !== null);
         const failedCount = results.length - successfulArticles.length;
         if (failedCount > 0) {
-             console.warn(`Failed to fetch content for ${failedCount} articles. Check previous logs and CORS configuration.`);
+             logger.warn(`Failed to fetch content for ${failedCount} out of ${results.length} articles. Check previous logs and CORS configuration.`);
         }
-         console.log(`Successfully processed ${successfulArticles.length} articles.`);
+         logger.info(`Successfully processed and retrieved ${successfulArticles.length} articles.`);
         return successfulArticles;
 
     } catch (error) {
-        // This error would likely be from listAll itself (e.g., permissions)
-        console.error("Error listing articles in storage:", error);
+        // This error would likely be from listAll itself (e.g., permissions error)
+        logger.error("Error listing articles in storage:", error);
         throw new Error(`Failed to list articles: ${(error as Error).message}`);
     }
 }
@@ -206,20 +255,20 @@ export async function getAllStoredArticles(): Promise<StoredArticleData[]> {
 /**
  * Deletes an article's data from Firebase Storage.
  *
- * @param articleId The unique identifier for the article.
+ * @param articleId The **base64url encoded** unique identifier for the article.
  * @returns A promise that resolves when the deletion is complete.
  */
 export async function deleteArticle(articleId: string): Promise<void> {
     const storageRef = ref(storage, `${ARTICLES_FOLDER}/${articleId}.json`);
     try {
         await deleteObject(storageRef);
-        console.log(`Article ${articleId} deleted successfully.`);
+        logger.info(`Article ${articleId} deleted successfully.`);
     } catch (error: any) {
          if (error.code === 'storage/object-not-found') {
-             console.warn(`Attempted to delete non-existent article ${articleId}.`);
+             logger.warn(`Attempted to delete non-existent article ${articleId}.`);
              return; // Don't throw an error if it's already gone
          }
-        console.error(`Error deleting article ${articleId}:`, error);
+        logger.error(`Error deleting article ${articleId}:`, error);
         throw new Error(`Failed to delete article data: ${error.message}`);
     }
 }

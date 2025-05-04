@@ -1,5 +1,6 @@
+
 /**
- * Represents a news article.
+ * Represents a news article scraped from a source.
  */
 export interface NewsArticle {
   /**
@@ -7,15 +8,15 @@ export interface NewsArticle {
    */
   title: string;
   /**
-   * The URL of the article. Should be unique.
+   * The absolute URL of the article. Should be unique.
    */
   url: string;
   /**
-   * The source of the article (e.g., 'BBC', 'New York Times').
+   * The source of the article (e.g., 'BBC', 'New York Times'). Matches config keys.
    */
   source: string;
   /**
-   * The main content/body of the article.
+   * The main content/body of the article (can be summary or full text).
    */
   content: string;
   /**
@@ -23,7 +24,10 @@ export interface NewsArticle {
    */
   imageUrl?: string;
    /**
-    * The generated news script. Optional, added after AI processing.
+    * The raw extracted publication date string, if available.
+    * Format may vary depending on the source.
     */
-   generatedScript?: string;
+   publishedDate?: string;
+   // Note: generatedScript is added in StoredArticleData in firebase-storage.ts
 }
+```
