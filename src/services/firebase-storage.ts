@@ -90,6 +90,7 @@ export interface StoredArticleData extends NewsArticle {
 }
 
 const ARTICLES_FOLDER = 'articles';
+const FETCH_TIMEOUT_MS = 15000; // 15 seconds timeout for individual fetches
 
 /**
  * Stores the article data (including the generated script) as a JSON file in Firebase Storage.
@@ -144,8 +145,10 @@ export async function getArticle(articleId: string): Promise<StoredArticleData> 
         // *** CORS ERROR LIKELY HAPPENS HERE ***
         // If fetch fails with "TypeError: Failed to fetch" or a CORS error,
         // check the CORS configuration on your Firebase Storage bucket. See comment block above.
-        console.debug(`Fetching article content from URL: ${url}`);
-        const response = await fetch(url); // Default mode is 'cors'
+        console.debug(`Fetching article content for ${articleId} from URL: ${url}`);
+        const response = await fetch(url, {
+            signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) // Add timeout
+        });
 
         if (!response.ok) {
             // Throw specific error for easier handling upstream
@@ -158,25 +161,23 @@ export async function getArticle(articleId: string): Promise<StoredArticleData> 
             throw new Error(`HTTP error fetching article JSON! status: ${response.status}`);
         }
         const data: StoredArticleData = await response.json();
-        console.info(`Article ${articleId} retrieved successfully.`);
-        // Basic validation of expected fields
-        if (!data.title || !data.url || !data.source || !data.content) { // Check for content now
-             console.warn(`Retrieved data for article ID ${articleId} is missing required fields (title, url, source, content).`);
-             // Depending on strictness, you might throw an error here
-        }
-
+        console.log(`Article ${articleId} retrieved successfully.`);
         return data;
     } catch (error: any) {
         // Catch potential fetch errors (NetworkError, CORS issues, JSON parsing errors)
         console.error(`Error fetching article content for ${articleId} from ${url}:`, error);
 
-        // Provide a more user-friendly error message, hinting at CORS
-        let errorMessage = `Failed to fetch article data for ${articleId}. This might be a network issue or a CORS configuration problem on the storage bucket. Check browser console and CORS settings.`;
-         if (error instanceof TypeError && error.message.includes('Failed to fetch')) { // Check includes for more robustness
-            errorMessage += ' The error suggests a possible CORS issue. Verify that the origin of your application is in the allowed origins in the Firebase Storage CORS configuration.';
+        // Provide a more user-friendly error message, hinting at CORS or Timeout
+        let errorMessage = `Failed to fetch article data for ${articleId}. `;
+         if (error.name === 'AbortError' || error.message.includes('timed out')) {
+             errorMessage += `The request timed out after ${FETCH_TIMEOUT_MS / 1000} seconds. Check network or increase timeout.`;
+         } else if (error instanceof TypeError && error.message.includes('Failed to fetch')) { // Check includes for more robustness
+            errorMessage += 'This might be a network issue or a CORS configuration problem on the storage bucket. Verify that the origin of your application is in the allowed origins in the Firebase Storage CORS configuration.';
          } else if (error instanceof SyntaxError) {
              // JSON parsing error
              errorMessage += ' The retrieved file is not valid JSON.';
+         } else {
+             errorMessage += 'Check browser console and CORS settings if applicable.'
          }
          errorMessage += ` Original error: ${error.message || 'Unknown fetch error'}`;
         throw new Error(errorMessage);
@@ -186,7 +187,7 @@ export async function getArticle(articleId: string): Promise<StoredArticleData> 
 /**
  * Retrieves all article data stored in the articles folder.
  * Fetches download URLs first, then fetches content concurrently.
- * Handles individual fetch errors gracefully.
+ * Handles individual fetch errors and timeouts gracefully.
  *
  * @returns A promise that resolves to an array of StoredArticleData.
  */
@@ -200,6 +201,7 @@ export async function getAllStoredArticles(): Promise<StoredArticleData[]> {
         console.info(`Found ${jsonFiles.length} JSON files in the articles folder.`);
 
         if (jsonFiles.length === 0) {
+             console.warn('No article JSON files found in storage.');
             return []; // No articles found
         }
 
@@ -208,10 +210,16 @@ export async function getAllStoredArticles(): Promise<StoredArticleData[]> {
             const articleId = itemRef.name.replace(/\.json$/, '');
             try {
                 // IMPORTANT: This calls getArticle, which performs a fetch.
-                // If CORS is not configured, this fetch will likely fail.
-                return await getArticle(articleId);
+                // Use Promise.race to add a timeout to the getArticle call
+                const result = await Promise.race([
+                    getArticle(articleId),
+                    new Promise<null>((_, reject) =>
+                        setTimeout(() => reject(new Error(`getArticle timed out for ${articleId}`)), FETCH_TIMEOUT_MS + 1000) // Slightly longer timeout for the race
+                    ),
+                ]);
+                return result; // Will be null if the timeout occurred
             } catch (error) {
-                // Log specific errors for each article that fails
+                // Log specific errors for each article that fails (including timeouts)
                 console.error(`Failed to get/process article with ID ${articleId} (${itemRef.name}):`, error);
                 // Return null to indicate failure for this specific article
                 // This prevents one failed article from crashing the entire list load.
@@ -225,14 +233,18 @@ export async function getAllStoredArticles(): Promise<StoredArticleData[]> {
         const successfulArticles = results.filter((article): article is StoredArticleData => article !== null);
         const failedCount = results.length - successfulArticles.length;
         if (failedCount > 0) {
-             console.warn(`Failed to fetch content for ${failedCount} out of ${results.length} articles. Check previous logs and CORS configuration.`);
+             console.warn(`Failed to fetch content for ${failedCount} out of ${results.length} articles due to errors or timeouts. Check previous logs and CORS configuration.`);
         }
          console.info(`Successfully processed and retrieved ${successfulArticles.length} articles.`);
         return successfulArticles;
 
-    } catch (error) {
-        // This error would likely be from listAll itself (e.g., permissions error)
-        console.error("Error listing articles in storage:", error);
+    } catch (error: any) {
+        // This error would likely be from listAll itself (e.g., permissions error, retry limit exceeded)
+         console.error("Error listing articles in storage:", error);
+         if (error.code === 'storage/retry-limit-exceeded') {
+            console.error("Firebase Storage: Max retry time for operation exceeded. This might indicate network issues or problems reaching the storage service.");
+            throw new Error(`Failed to list articles: Max retry time exceeded. Check network connectivity.`);
+         }
         throw new Error(`Failed to list articles: ${(error as Error).message}`);
     }
 }

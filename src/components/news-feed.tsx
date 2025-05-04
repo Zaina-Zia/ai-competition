@@ -59,11 +59,11 @@ export function NewsFeed() {
   } = useQuery<StoredArticleData[], Error>({
     queryKey: ['storedArticles'], // Unique query key for stored articles
     queryFn: async () => {
-       console.log('Fetching stored articles from Firebase Storage...');
+       console.log('[NewsFeed] Triggering fetch of stored articles...'); // Added logging
        try {
          // This function now fetches all JSONs and parses them
          const articles = await getAllStoredArticles();
-         console.log(`Fetched ${articles.length} stored articles.`);
+         console.log(`[NewsFeed] Successfully fetched ${articles.length} stored articles.`); // Added logging
          // Sort articles by stored date (newest first) if available, fallback to title
          articles.sort((a, b) => {
             if (a.storedAt && b.storedAt) {
@@ -80,7 +80,7 @@ export function NewsFeed() {
          });
          return articles;
        } catch (err) {
-         console.error('Error fetching stored articles:', err);
+         console.error('[NewsFeed] Error fetching stored articles:', err); // Added logging
          toast({
            variant: "destructive",
            title: 'Error Loading Articles',
