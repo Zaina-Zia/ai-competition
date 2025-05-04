@@ -11,9 +11,6 @@ export const metadata: Metadata = {
   description: 'Your daily news, summarized and visualized.',
 };
 
-// Removed the GeistSans function call as it was causing errors previously.
-// The font variable is applied directly via className.
-
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -22,34 +19,33 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
-        {/* Content Security Policy to Allow CDN Scripts and Local Scripts (adjust as needed) */}
-        {/* Added 'self' for local scripts like talkinghead.mjs */}
-         <meta
-           httpEquiv="Content-Security-Policy"
-           content="script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com; connect-src 'self' http://api.ispeech.org https://firebasestorage.googleapis.com;"
-        />
-        {/* Add Import Map for Three.js (CDN) and TalkingHead (Local) */}
-        <Script
-          id="import-map"
-          strategy="beforeInteractive" // Load before other client-side scripts
-          type="importmap"
-          // Use dangerouslySetInnerHTML for the import map JSON
-          dangerouslySetInnerHTML={{
+         {/* Add Import Map for Three.js and TalkingHead CDN */}
+         {/* Ensure the talkinghead URL points to the correct .mjs file */}
+         <Script
+           id="import-map"
+           strategy="beforeInteractive" // Load before other client-side scripts
+           type="importmap"
+           dangerouslySetInnerHTML={{
             __html: `
             {
                 "imports": {
                   "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
-                  "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
-                  "talkinghead": "/talkinghead/talkinghead.mjs"
+                  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+                  "talkinghead": "https://cdn.jsdelivr.net/gh/met4citizen/TalkingHead@1.4/modules/talkinghead.mjs"
                  }
             }
             `,
-          }}
+           }}
+        />
+        {/* Content Security Policy - Adjusted to allow CDN and API calls */}
+        {/* Note: Adjust 'connect-src' if your Firebase Storage URL or other APIs change */}
+         <meta
+           httpEquiv="Content-Security-Policy"
+           content="script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com; connect-src 'self' http://api.ispeech.org https://firebasestorage.googleapis.com; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src * data: blob:; font-src 'self' data:;"
         />
         <link rel="icon" href="/favicon.ico" sizes="any" />
       </head>
       <body
-        // Apply the font variable directly using GeistSans.variable
         className={cn(
           'min-h-screen bg-background font-sans antialiased',
           GeistSans.variable // Use the variable provided by the import
