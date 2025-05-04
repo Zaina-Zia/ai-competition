@@ -26,6 +26,10 @@ const nextConfig: NextConfig = {
         hostname: 'static01.nyt.com', // Example for NYT images
        },
        {
+         protocol: 'https',
+         hostname: 'static.files.bbci.co.uk', // Added BBC image hostname
+       },
+       {
         protocol: 'https',
         hostname: '**.reutersmedia.net', // Example for Reuters (wildcard)
        },
@@ -36,6 +40,10 @@ const nextConfig: NextConfig = {
         {
          protocol: 'https',
          hostname: 'www.aljazeera.com',
+       },
+       {
+        protocol: 'https',
+        hostname: 'newscast-now.firebasestorage.app', // Allow Firebase Storage
        },
     ],
   },
