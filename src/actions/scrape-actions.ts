@@ -1,10 +1,20 @@
 'use server';
 
+import axios from 'axios';
+import * as cheerio from 'cheerio';
 import { summarizeArticle } from '@/ai/flows/summarize-article';
 import { storeArticle } from '@/services/firebase-storage';
-import type { NewsArticle } from '@/services/news-scraper.interface';
 
-// Interface for the return value of the Server Action
+// Interfaces
+interface NewsArticle {
+    title: string;
+    url: string;
+    content: string;
+    source: string;
+    imageUrl?: string;
+    generatedScript?: string;
+}
+
 interface ScrapeResult {
     success: boolean;
     processedCount: number;
@@ -12,115 +22,206 @@ interface ScrapeResult {
     error?: string;
 }
 
-// Placeholder scraping function - REPLACE WITH ACTUAL SCRAPING LOGIC
-async function performScraping(source: string, limit: number): Promise<NewsArticle[]> {
-    console.log(`[Server Action] Simulating scraping for source: ${source} (limit: ${limit})`);
-    // Simulate network delay
-    await new Promise(resolve => setTimeout(resolve, Math.random() * 500 + 200));
-
-    // Simulate potential error
-    if (Math.random() < 0.15 && source === 'Reuters') { // 15% chance of error for Reuters
-        console.error(`[Server Action] Simulated scraping error for ${source}`);
-        throw new Error(`Simulated network timeout for ${source}.`);
-    }
-
-    // Return placeholder data matching the source
-     const placeholderData: { [key: string]: Omit<NewsArticle, 'generatedScript'>[] } = {
-      'BBC': [
-        { title: `BBC News Update ${Date.now()}`, url: `https://www.bbc.com/news/world-${Date.now()}`, source: 'BBC', content: 'This is fresh content from BBC scraped on the server.', imageUrl: 'https://picsum.photos/seed/bbc-server/400/300' },
-        { title: 'Another BBC Story', url: `https://www.bbc.com/news/technology-${Date.now()+1}`, source: 'BBC', content: 'More server-side scraped content from the BBC.', imageUrl: 'https://picsum.photos/seed/bbc-server2/400/300' },
-      ],
-      'New York Times': [
-        { title: `NYT Exclusive Report ${Date.now()}`, url: `https://www.nytimes.com/news/politics-${Date.now()}`, source: 'New York Times', content: 'Server-scraped exclusive from the New York Times.', imageUrl: 'https://picsum.photos/seed/nyt-server/400/300' },
-      ],
-      'Reuters': [
-        { title: `Reuters Breaking ${Date.now()}`, url: `https://www.reuters.com/news/business-${Date.now()}`, source: 'Reuters', content: 'Breaking news content fetched by the server action from Reuters.', imageUrl: 'https://picsum.photos/seed/reuters-server/400/300' },
-      ],
-      'Associated Press': [
-        { title: `AP Wire Update ${Date.now()}`, url: `https://apnews.com/news/sports-${Date.now()}`, source: 'Associated Press', content: 'Associated Press content retrieved via server action.', imageUrl: 'https://picsum.photos/seed/ap-server/400/300'},
-      ],
-      'Al Jazeera': [
-        { title: `Al Jazeera Investigation ${Date.now()}`, url: `https://www.aljazeera.com/news/investigation-${Date.now()}`, source: 'Al Jazeera', content: 'In-depth investigation content from Al Jazeera via server.', imageUrl: 'https://picsum.photos/seed/aj-server/400/300'},
-      ]
-     };
-
-    return (placeholderData[source] || []).slice(0, limit);
+interface ScrapingConfig {
+    url: string;
+    selector: {
+        article: string;
+        title: string;
+        content: string;
+        imageUrl: string;
+        link: string;
+    };
 }
 
+// Scraping configuration
+const scrapingConfig: Record<string, ScrapingConfig> = {
+    'BBC': {
+        url: 'https://www.bbc.com/news',
+        selector: {
+            article: 'div[data-component="card"]',
+            title: 'h3, [class*="title"], [class*="headline"]',
+            content: 'p[class*="description"], p[class*="summary"]',
+            imageUrl: 'img, [data-testid="image"]',
+            link: 'a[href]'
+        }
+    },
+    'New York Times': {
+        url: 'https://www.nytimes.com',
+        selector: {
+            article: 'article, li[class*="story"]',
+            title: 'h3, h2',
+            content: 'p[class*="summary"]',
+            imageUrl: 'img',
+            link: 'a[href]'
+        }
+    },
+    'Reuters': {
+        url: 'https://www.reuters.com',
+        selector: {
+            article: 'article, [data-testid="ContentCard"]',
+            title: 'h3, [class*="headline"]',
+            content: 'p[class*="text"], div[class*="summary"]',
+            imageUrl: 'img',
+            link: 'a[href]'
+        }
+    },
+    'Associated Press': {
+        url: 'https://apnews.com',
+        selector: {
+            article: '[class*="FeedCard"], [class*="Card"]',
+            title: 'h3, [class*="headline"]',
+            content: 'p[class*="summary"], div[class*="text"]',
+            imageUrl: 'img, picture img',
+            link: 'a[href]'
+        }
+    },
+    'Al Jazeera': {
+        url: 'https://www.aljazeera.com',
+        selector: {
+            article: 'article, [class*="card"]',
+            title: '[class*="title"], h3, h2',
+            content: 'p[class*="description"], div[class*="text"]',
+            imageUrl: 'img, [class*="image"] img',
+            link: 'a[class*="link"], a[href]'
+        }
+    }
+};
+
+// Utility to resolve relative URLs
+const resolveUrl = (baseUrl: string, relativeUrl: string): string => {
+    try {
+        return new URL(relativeUrl, baseUrl).toString();
+    } catch {
+        return relativeUrl;
+    }
+};
+
+// Scraping function
+async function performScraping(source: string, limit: number): Promise<NewsArticle[]> {
+    const config = scrapingConfig[source];
+    if (!config) {
+        console.error(`No configuration for source: ${source}`);
+        return [];
+    }
+
+    try {
+        const response = await axios.get(config.url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+            },
+            timeout: 15000
+        });
+
+        if (response.status !== 200) {
+            console.error(`Failed to fetch ${source}: Status ${response.status}`);
+            return [];
+        }
+
+        const $ = cheerio.load(response.data);
+        const articles: NewsArticle[] = [];
+        const articleElements = $(config.selector.article).slice(0, limit);
+
+        for (const element of articleElements) {
+            try {
+                const $element = $(element);
+                const title = $element.find(config.selector.title).first().text().trim();
+
+                // Get URL from link selector
+                let articleUrl = $element.find(config.selector.link).first().attr('href') ||
+                                $element.attr('href') || '';
+
+                // Resolve relative URL
+                articleUrl = resolveUrl(config.url, articleUrl);
+
+                const content = $element.find(config.selector.content).first().text().trim();
+                let imageUrl = $element.find(config.selector.imageUrl).first().attr('src') ||
+                              $element.find(config.selector.imageUrl).first().attr('data-src') || '';
+
+                // Resolve image URL
+                if (imageUrl && !imageUrl.startsWith('http')) {
+                    imageUrl = resolveUrl(config.url, imageUrl);
+                }
+
+                if (title && articleUrl) {
+                    articles.push({
+                        title,
+                        url: articleUrl,
+                        content: content || 'No content available',
+                        source,
+                        imageUrl: imageUrl || undefined
+                    });
+                }
+            } catch (error) {
+                console.error(`Error parsing article from ${source}:`, error);
+            }
+        }
+
+        console.log(`Scraped ${articles.length} articles from ${source}`);
+        return articles;
+    } catch (error) {
+        console.error(`Error scraping ${source}:`, error);
+        return [];
+    }
+}
 
 /**
- * Server Action to scrape news articles from selected sources,
- * generate summaries using Genkit, and store them in Firebase Storage.
- *
- * @param sources An array of news source names (e.g., ['BBC', 'New York Times']).
- * @param limit The maximum number of articles to process per source.
- * @returns A promise resolving to a ScrapeResult object.
+ * Server Action to scrape news articles, generate summaries, and store in Firebase
+ * @param sources Array of news source names
+ * @param limit Maximum articles per source
+ * @returns ScrapeResult
  */
 export async function scrapeAndStoreArticles(sources: string[], limit: number): Promise<ScrapeResult> {
-    console.log(`[Server Action] Starting scrapeAndStoreArticles for sources: ${sources.join(', ')}`);
     let processedCount = 0;
-    let hasErrors = false;
     const errors: string[] = [];
 
     for (const source of sources) {
         try {
-            console.log(`[Server Action] Processing source: ${source}`);
-            // 1. Scrape articles (Replace with actual scraping logic)
-            const scrapedArticles = await performScraping(source, limit);
-            console.log(`[Server Action] Scraped ${scrapedArticles.length} articles for ${source}.`);
+            const articles = await performScraping(source, limit);
 
-            if (scrapedArticles.length === 0) {
-                console.log(`[Server Action] No articles found for ${source}, skipping further processing.`);
+            if (!articles.length) {
+                errors.push(`No articles found for ${source}`);
                 continue;
             }
 
-            // 2. Generate scripts and store concurrently
-            const processingPromises = scrapedArticles.map(async (article) => {
+            const processingPromises = articles.map(async (article) => {
                 try {
-                    // Ensure URL is present and valid
-                    if (!article.url || typeof article.url !== 'string') {
-                         console.error(`[Server Action] Skipping article due to invalid URL: ${JSON.stringify(article)}`);
-                        return; // Skip this article
+                    if (!article.url) {
+                        console.error(`Invalid URL for article: ${article.title}`);
+                        return;
                     }
 
-                    // 2a. Generate script using Genkit flow
-                    console.log(`[Server Action] Generating script for: ${article.title}`);
+                    // Generate summary
                     const { script } = await summarizeArticle({ content: article.content });
-                    console.log(`[Server Action] Script generated for: ${article.title}`);
 
-                    // 2b. Store article data (with script) in Firebase Storage
-                    // Use encoded URL as the unique ID for the storage object
+                    // Store article
                     const articleId = encodeURIComponent(article.url);
-                    const dataToStore: NewsArticle = { ...article, generatedScript: script };
+                    const dataToStore: NewsArticle = {
+                        ...article,
+                        generatedScript: script
+                    };
 
-                    console.log(`[Server Action] Storing article ${articleId} in Firebase Storage.`);
                     await storeArticle(articleId, dataToStore);
-                    console.log(`[Server Action] Successfully stored ${articleId}.`);
                     processedCount++;
-
-                } catch (processingError) {
-                    console.error(`[Server Action] Error processing article ${article.url || article.title}:`, processingError);
-                    // Collect specific error messages if helpful
-                    errors.push(`Error processing "${article.title}": ${(processingError as Error).message}`);
-                    hasErrors = true;
+                } catch (error) {
+                    const errorMsg = `Error processing "${article.title}": ${(error as Error).message}`;
+                    console.error(errorMsg);
+                    errors.push(errorMsg);
                 }
             });
 
             await Promise.all(processingPromises);
-            console.log(`[Server Action] Finished processing promises for ${source}.`);
-
-        } catch (scrapeError) {
-            console.error(`[Server Action] Error scraping source ${source}:`, scrapeError);
-            errors.push(`Error scraping ${source}: ${(scrapeError as Error).message}`);
-            hasErrors = true;
+        } catch (error) {
+            const errorMsg = `Error scraping ${source}: ${(error as Error).message}`;
+            console.error(errorMsg);
+            errors.push(errorMsg);
         }
     }
 
-    console.log(`[Server Action] Completed scrapeAndStoreArticles. Processed: ${processedCount}, Errors: ${hasErrors}`);
     return {
-        success: !hasErrors,
-        processedCount: processedCount,
+        success: errors.length === 0,
+        processedCount,
         sourcesAttempted: sources.length,
-        error: hasErrors ? `Scraping and processing completed with errors: ${errors.join('; ')}` : undefined,
+        error: errors.length > 0 ? errors.join('; ') : undefined
     };
 }
