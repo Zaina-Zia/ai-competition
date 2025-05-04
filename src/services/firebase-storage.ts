@@ -5,20 +5,19 @@ import { encodeBase64UrlSafe, decodeBase64UrlSafe } from '@/lib/utils'; // Impor
 
 /*
  * =============================================================================
- * CRITICAL: CORS Configuration for Firebase Storage (Resolving Fetch Errors)
+ * CRITICAL: CORS Configuration for Firebase Storage (Resolving Fetch/List Errors)
  * =============================================================================
- * If you are seeing "Failed to fetch" errors in the browser console when trying
- * to load articles (specifically from the `getArticle` or `getAllStoredArticles`
- * functions calling `fetch(url)`), it is almost certainly due to missing or
- * incorrect CORS (Cross-Origin Resource Sharing) configuration on your
- * Firebase Storage bucket (which is a Google Cloud Storage bucket).
+ * If you are seeing "Failed to fetch", "Response to preflight request doesn't pass access control check",
+ * or similar CORS errors in the browser console when trying to load or list articles
+ * (specifically from `getArticle`, `getAllStoredArticles`, or `listAll`), it is almost certainly
+ * due to missing or incorrect CORS configuration on your Firebase Storage bucket.
  *
  * Browsers enforce the Same-Origin Policy, preventing web pages from making
- * requests to a different domain (like `firebasestorage.googleapis.com` or your
- * project-specific storage domain) unless that domain explicitly allows it via
- * CORS headers.
+ * requests to a different domain (like `firebasestorage.googleapis.com`) unless that domain
+ * explicitly allows it via CORS headers.
  *
- * You MUST configure your bucket to allow GET requests from your web app's origin(s).
+ * **Crucially, operations like `listAll` often trigger a preflight `OPTIONS` request before the actual `GET` request.**
+ * Your bucket MUST be configured to allow both `GET` and `OPTIONS` methods from your web app's origin(s).
  *
  * How to configure CORS using gsutil (Recommended):
  *
@@ -26,20 +25,19 @@ import { encodeBase64UrlSafe, decodeBase64UrlSafe } from '@/lib/utils'; // Impor
  *    Follow the instructions: https://cloud.google.com/storage/docs/gsutil_install
  *
  * 2. Create a CORS configuration file (e.g., `cors-config.json`):
- *    Replace `http://localhost:9000` / `https://*.cloudworkstations.dev` / etc. with your actual origins.
- *    You can add multiple origins to the array.
- *    Using wildcards like `*.cloudworkstations.dev` is possible but be mindful of security implications.
+ *    Replace origin URLs with your actual origins (local dev, cloud workstation, production).
+ *    Using wildcards like `*.cloudworkstations.dev` is possible but less secure for production.
  *
  *    ```json
  *    [
  *      {
  *        "origin": [
- *           "http://localhost:9000", // Local dev
- *           "https://9000-idx-studio-1746337412493.cluster-w5vd22whf5gmav2vgkomwtc4go.cloudworkstations.dev", // Specific dev URL
+ *           "http://localhost:9000", // Local dev (replace port if different)
+ *           "https://6000-idx-studio-1746337412493.cluster-w5vd22whf5gmav2vgkomwtc4go.cloudworkstations.dev", // Specific dev URL
  *           "https://*.cloudworkstations.dev", // Wider match for dev environments
  *           "https://your-production-app-domain.com" // Add production domain here
  *         ],
- *        "method": ["GET"],
+ *        "method": ["GET", "OPTIONS"], // *** MUST include OPTIONS for listAll ***
  *        "responseHeader": ["Content-Type", "Access-Control-Allow-Origin"],
  *        "maxAgeSeconds": 3600
  *      }
@@ -61,18 +59,17 @@ import { encodeBase64UrlSafe, decodeBase64UrlSafe } from '@/lib/utils'; // Impor
  * Alternative: Using Google Cloud Console (Less Recommended for complex configs):
  *    a. Go to Cloud Storage -> Buckets in the Google Cloud Console.
  *    b. Select your project's bucket (`newscast-now.appspot.com`).
- *    c. Go to the "Permissions" tab.
- *    d. Click "Edit access" or find the CORS configuration section.
- *    e. Add your origin(s) (e.g., `http://localhost:9000`, your cloud workstation URL).
- *    f. Select the `GET` method.
- *    g. Set `responseHeader` to include `Content-Type` and `Access-Control-Allow-Origin`.
- *    h. Set `maxAgeSeconds` (e.g., 3600).
- *    i. Save the configuration.
+ *    c. Go to the "Permissions" tab, then "Edit access".
+ *    d. Under CORS configuration, add your origin(s).
+ *    e. Select BOTH `GET` and `OPTIONS` methods.
+ *    f. Add `Content-Type` and `Access-Control-Allow-Origin` to `responseHeader`.
+ *    g. Set `maxAgeSeconds` (e.g., 3600).
+ *    h. Save the configuration.
  *
  * IMPORTANT NOTES:
- *  - It might take a few minutes for CORS changes to propagate. Clear your browser cache and restart your dev server if issues persist after configuration.
- *  - Ensure the `origin` in your `cors-config.json` EXACTLY matches the origin shown in the browser's address bar (including `http` or `https` and the port number for local development).
- *  - The error "Response to preflight request doesn't pass access control check: It does not have HTTP ok status" also indicates a CORS problem. The `fetch` might be preceded by an `OPTIONS` request (preflight) which also needs to be allowed by the CORS policy if headers other than simple ones are involved. Adding `"method": ["GET", "OPTIONS"]` might be necessary in some cases, but usually just `GET` is sufficient for fetching files.
+ *  - It might take a few minutes for CORS changes to propagate. Clear browser cache/hard reload.
+ *  - Ensure the `origin` in `cors-config.json` EXACTLY matches the origin in the browser's address bar.
+ *  - The error "Response to preflight request doesn't pass access control check: It does not have HTTP ok status" specifically points to the `OPTIONS` request failing, reinforcing the need to allow it in the CORS config.
  *
  * For more details, see:
  * https://firebase.google.com/docs/storage/web/download-files#cors_configuration
@@ -90,7 +87,9 @@ export interface StoredArticleData extends NewsArticle {
 }
 
 const ARTICLES_FOLDER = 'articles';
-const FETCH_TIMEOUT_MS = 15000; // 15 seconds timeout for individual fetches
+const FETCH_TIMEOUT_MS = 10000; // 10 seconds timeout for individual fetches
+const LIST_TIMEOUT_MS = 15000; // 15 seconds for listing files
+
 
 /**
  * Stores the article data (including the generated script) as a JSON file in Firebase Storage.
@@ -142,9 +141,7 @@ export async function getArticle(articleId: string): Promise<StoredArticleData> 
 
     try {
         // Use fetch to get the content from the URL
-        // *** CORS ERROR LIKELY HAPPENS HERE ***
-        // If fetch fails with "TypeError: Failed to fetch" or a CORS error,
-        // check the CORS configuration on your Firebase Storage bucket. See comment block above.
+        // *** CORS ERROR LIKELY HAPPENS HERE if GET is not allowed ***
         console.debug(`Fetching article content for ${articleId} from URL: ${url}`);
         const response = await fetch(url, {
             signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) // Add timeout
@@ -172,7 +169,7 @@ export async function getArticle(articleId: string): Promise<StoredArticleData> 
          if (error.name === 'AbortError' || error.message.includes('timed out')) {
              errorMessage += `The request timed out after ${FETCH_TIMEOUT_MS / 1000} seconds. Check network or increase timeout.`;
          } else if (error instanceof TypeError && error.message.includes('Failed to fetch')) { // Check includes for more robustness
-            errorMessage += 'This might be a network issue or a CORS configuration problem on the storage bucket. Verify that the origin of your application is in the allowed origins in the Firebase Storage CORS configuration.';
+            errorMessage += 'This might be a network issue or a CORS configuration problem on the storage bucket (check GET allowed). Verify that the origin of your application is in the allowed origins in the Firebase Storage CORS configuration.';
          } else if (error instanceof SyntaxError) {
              // JSON parsing error
              errorMessage += ' The retrieved file is not valid JSON.';
@@ -196,20 +193,23 @@ export async function getAllStoredArticles(): Promise<StoredArticleData[]> {
     console.info(`Listing articles from storage path: ${listRef.fullPath}`);
 
     try {
+        // *** CORS ERROR LIKELY HAPPENS HERE if OPTIONS is not allowed ***
+        // listAll triggers a preflight OPTIONS request.
         const res = await listAll(listRef);
         const jsonFiles = res.items.filter(itemRef => itemRef.name.endsWith('.json'));
         console.info(`Found ${jsonFiles.length} JSON files in the articles folder.`);
 
         if (jsonFiles.length === 0) {
              console.warn('No article JSON files found in storage.');
-            return []; // No articles found
+             // Check if the folder actually exists or is empty.
+             // If you just deleted the folder, this is expected.
+             return []; // No articles found
         }
 
         const fetchPromises = jsonFiles.map(async (itemRef: StorageReference) => {
             // Extract articleId from the file name (remove .json extension)
             const articleId = itemRef.name.replace(/\.json$/, '');
             try {
-                // IMPORTANT: This calls getArticle, which performs a fetch.
                 // Use Promise.race to add a timeout to the getArticle call
                 const result = await Promise.race([
                     getArticle(articleId),
@@ -239,13 +239,26 @@ export async function getAllStoredArticles(): Promise<StoredArticleData[]> {
         return successfulArticles;
 
     } catch (error: any) {
-        // This error would likely be from listAll itself (e.g., permissions error, retry limit exceeded)
+        // This error would likely be from listAll itself (e.g., permissions error, retry limit exceeded, CORS on OPTIONS)
          console.error("Error listing articles in storage:", error);
-         if (error.code === 'storage/retry-limit-exceeded') {
-            console.error("Firebase Storage: Max retry time for operation exceeded. This might indicate network issues or problems reaching the storage service.");
-            throw new Error(`Failed to list articles: Max retry time exceeded. Check network connectivity.`);
+
+        let errorMessage = `Failed to list articles from '${ARTICLES_FOLDER}'. `;
+        if (error.code === 'storage/retry-limit-exceeded') {
+            errorMessage += `Max retry time exceeded. This might indicate network issues or problems reaching the storage service.`;
+         } else if (error.code === 'storage/unknown' && error.message.includes('NetworkError') || (error instanceof TypeError && error.message.includes('Failed to fetch'))) {
+             // This specific error pattern often indicates a CORS failure on the OPTIONS preflight request for listAll.
+             errorMessage += `A network error occurred, possibly due to CORS. The 'listAll' operation requires the 'OPTIONS' method to be allowed in your Firebase Storage CORS configuration for the origin '${window.location.origin}'. Please verify your CORS settings include 'OPTIONS'.`;
+         } else if (error.code === 'storage/object-not-found') {
+            // This shouldn't happen with listAll on a folder, but good to handle.
+             errorMessage += `The specified folder '${ARTICLES_FOLDER}' does not exist or you lack permissions.`;
+         } else if (error.code === 'storage/unauthorized') {
+             errorMessage += `Permission denied. Ensure your Storage security rules allow listing objects in the '${ARTICLES_FOLDER}' path, or that the user is authenticated if required.`;
          }
-        throw new Error(`Failed to list articles: ${(error as Error).message}`);
+        else {
+             errorMessage += `Unexpected error: ${error.message || 'Unknown listAll error'}`;
+         }
+
+        throw new Error(errorMessage);
     }
 }
 

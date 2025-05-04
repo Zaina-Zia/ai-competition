@@ -16,10 +16,14 @@ const firebaseConfig = {
 
 // Validate that necessary config values are present and not placeholders
 const requiredConfigs: (keyof typeof firebaseConfig)[] = ['apiKey', 'projectId', 'storageBucket'];
-const missingConfigs = requiredConfigs.filter(key => !firebaseConfig[key] || String(firebaseConfig[key]).includes('YOUR_')); // Check for empty or placeholder values
+const missingConfigs = requiredConfigs.filter(key => {
+    const value = firebaseConfig[key];
+    return !value || typeof value !== 'string' || value.includes('YOUR_') || value.trim() === '';
+});
 
 if (missingConfigs.length > 0) {
-  const errorMessage = `Firebase configuration is incomplete or uses placeholder values. Please check your .env file and ensure the following NEXT_PUBLIC_ variables are set correctly: ${missingConfigs.map(key => `NEXT_PUBLIC_FIREBASE_${key.replace(/([A-Z])/g, '_$1').toUpperCase()}`).join(', ')}`;
+  const missingKeys = missingConfigs.map(key => `NEXT_PUBLIC_FIREBASE_${key.replace(/([A-Z])/g, '_$1').toUpperCase()}`);
+  const errorMessage = `Firebase configuration is incomplete or uses placeholder values. Please check your .env file and ensure the following NEXT_PUBLIC_ variables are set correctly: ${missingKeys.join(', ')}`;
   console.error(errorMessage);
   // Throw an error to stop execution if the config is invalid.
   // This prevents the app from running with a broken Firebase connection.
